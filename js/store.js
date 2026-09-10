@@ -8,6 +8,8 @@ const STORAGE_KEYS = {
   QUESTIONS: "estudia_aws_questions_v1",
   ANSWERS: "estudia_aws_answers_v1",
   FAILURES: "estudia_aws_failures_v1",
+  RESOLVED_FAILURES: "estudia_aws_resolved_failures_v1",
+  RECALL_HISTORY: "estudia_aws_recall_history_v1",
   DOUBTS: "estudia_aws_doubts_v1",
   MNEMONICS: "estudia_aws_mnemonics_v1",
   POMODORO: "estudia_aws_pomodoro_v1",
@@ -17,10 +19,12 @@ const STORAGE_KEYS = {
 class ExamStore {
   constructor() {
     this.questions = [];
-    this.answers = {};      // { [qId]: { selected: ['A'], isCorrect: true/false, timestamp, attempts: 1 } }
-    this.failures = {};     // { [qId]: { qId, blockNumber, concept, failureCount, timestamp } }
-    this.doubts = {};       // { [qId]: true }
-    this.mnemonics = {};    // { [qId]: { text, lockerNumber, updatedAt } }
+    this.answers = {};          // { [qId]: { selected: ['A'], isCorrect: true/false, timestamp, attempts: 1 } }
+    this.failures = {};         // { [qId]: { qId, blockNumber, concept, failureCount, timestamp } }
+    this.resolvedFailures = {}; // { [qId]: { qId, blockNumber, concept, failureCount, resolvedAt, resolvedWith } }
+    this.recallHistory = [];    // [ { id, date, totalQuestions, resolvedCount, failedCount, ... } ]
+    this.doubts = {};           // { [qId]: true }
+    this.mnemonics = {};        // { [qId]: { text, lockerNumber, updatedAt } }
     this.pomodoroStats = { completedSessions: 0, totalFocusMinutes: 0 };
     this.settings = {
       darkMode: true,
@@ -57,6 +61,12 @@ class ExamStore {
       const fRaw = localStorage.getItem(STORAGE_KEYS.FAILURES);
       if (fRaw) this.failures = JSON.parse(fRaw);
 
+      const rfRaw = localStorage.getItem(STORAGE_KEYS.RESOLVED_FAILURES);
+      if (rfRaw) this.resolvedFailures = JSON.parse(rfRaw);
+
+      const rhRaw = localStorage.getItem(STORAGE_KEYS.RECALL_HISTORY);
+      if (rhRaw) this.recallHistory = JSON.parse(rhRaw);
+
       const dRaw = localStorage.getItem(STORAGE_KEYS.DOUBTS);
       if (dRaw) this.doubts = JSON.parse(dRaw);
 
@@ -78,6 +88,8 @@ class ExamStore {
       localStorage.setItem(STORAGE_KEYS.QUESTIONS, JSON.stringify(this.questions));
       localStorage.setItem(STORAGE_KEYS.ANSWERS, JSON.stringify(this.answers));
       localStorage.setItem(STORAGE_KEYS.FAILURES, JSON.stringify(this.failures));
+      localStorage.setItem(STORAGE_KEYS.RESOLVED_FAILURES, JSON.stringify(this.resolvedFailures));
+      localStorage.setItem(STORAGE_KEYS.RECALL_HISTORY, JSON.stringify(this.recallHistory));
       localStorage.setItem(STORAGE_KEYS.DOUBTS, JSON.stringify(this.doubts));
       localStorage.setItem(STORAGE_KEYS.MNEMONICS, JSON.stringify(this.mnemonics));
       localStorage.setItem(STORAGE_KEYS.POMODORO, JSON.stringify(this.pomodoroStats));
@@ -127,6 +139,78 @@ class ExamStore {
     }
 
     this.saveToStorage();
+  }
+
+  /**
+   * Registra una respuesta durante el Simulacro Dinámico de Errores (Active Recall)
+   * Si acierta: consolida el error, lo elimina de fallos activos y recupera puntuación neta.
+   * Si falla: incrementa el contador de fallos para priorizarlo en futuros repasos.
+   */
+  recordRecallAnswer(questionId, selectedLetters, isCorrect, concept = "") {
+    const qId = String(questionId);
+    const prevAnswer = this.answers[qId];
+    const attempts = (prevAnswer ? prevAnswer.attempts : 0) + 1;
+    const question = this.questions.find(q => String(q.id) === qId);
+    const blockNum = question ? question.blockNumber : 1;
+
+    if (isCorrect) {
+      const prevFail = this.failures[qId];
+      this.resolvedFailures[qId] = {
+        questionId: qId,
+        blockNumber: blockNum,
+        concept: concept || (question ? question.question.slice(0, 80) + "..." : ""),
+        failureCount: prevFail ? prevFail.failureCount : 1,
+        resolvedAt: new Date().toISOString(),
+        resolvedWith: selectedLetters
+      };
+      delete this.failures[qId];
+      delete this.doubts[qId];
+
+      this.answers[qId] = {
+        selected: selectedLetters,
+        isCorrect: true,
+        timestamp: new Date().toISOString(),
+        attempts: attempts,
+        resolvedInRecall: true
+      };
+    } else {
+      const prevFail = this.failures[qId];
+      const failCount = (prevFail ? prevFail.failureCount : 0) + 1;
+      this.failures[qId] = {
+        questionId: qId,
+        blockNumber: blockNum,
+        concept: concept || (question ? question.question.slice(0, 80) + "..." : ""),
+        failureCount: failCount,
+        lastAttemptAt: new Date().toISOString(),
+        timestamp: prevFail ? prevFail.timestamp : new Date().toISOString()
+      };
+
+      this.answers[qId] = {
+        selected: selectedLetters,
+        isCorrect: false,
+        timestamp: new Date().toISOString(),
+        attempts: attempts
+      };
+    }
+
+    this.saveToStorage();
+  }
+
+  /**
+   * Guarda el resumen y métricas de un Simulacro de Errores completado
+   */
+  saveRecallSessionSummary(summary) {
+    if (!summary) return null;
+    const entry = {
+      id: "recall_" + Date.now(),
+      date: new Date().toISOString(),
+      ...summary
+    };
+    if (!this.recallHistory) this.recallHistory = [];
+    this.recallHistory.unshift(entry);
+    if (this.recallHistory.length > 50) this.recallHistory.pop();
+    this.saveToStorage();
+    return entry;
   }
 
   /**
@@ -249,6 +333,8 @@ class ExamStore {
     // Fórmula de Puntuación Neta Oficial: Aciertos - (Fallos / 3)
     const netScore = Math.max(0, +(correct - (failed / 3)).toFixed(1));
     const totalFailuresInDb = Object.keys(this.failures).length;
+    const totalResolvedFailures = Object.keys(this.resolvedFailures || {}).length;
+    const totalRecallSessions = (this.recallHistory || []).length;
 
     return {
       totalQuestions,
@@ -259,6 +345,8 @@ class ExamStore {
       accuracy,
       netScore,
       totalFailuresInDb,
+      totalResolvedFailures,
+      totalRecallSessions,
       completedPomodoros: this.pomodoroStats.completedSessions || 0,
       totalFocusMinutes: this.pomodoroStats.totalFocusMinutes || 0
     };
@@ -307,10 +395,24 @@ class ExamStore {
     existing.forcedCorrect = true;
     existing.forcedReason = customReason;
 
-    // Eliminar de la base de fallos (rojas)
-    if (this.failures[qId]) {
+    // Eliminar de la base de fallos (rojas) y archivar en fallos resueltos/consolidados
+    const prevFail = this.failures[qId];
+    if (prevFail) {
+      if (!this.resolvedFailures) this.resolvedFailures = {};
+      const question = this.questions.find(q => String(q.id) === qId);
+      this.resolvedFailures[qId] = {
+        questionId: qId,
+        blockNumber: question ? question.blockNumber : (existing.blockNumber || 1),
+        concept: (question ? question.question.slice(0, 80) + "..." : "") || prevFail.concept,
+        failureCount: prevFail.failureCount || 1,
+        resolvedAt: new Date().toISOString(),
+        resolvedWith: existing.selected || [],
+        forcedCorrect: true,
+        forcedReason: customReason
+      };
       delete this.failures[qId];
     }
+    delete this.doubts[qId];
 
     this.saveToStorage();
   }
@@ -325,6 +427,11 @@ class ExamStore {
 
     existing.isCorrect = false;
     existing.forcedCorrect = false;
+    delete existing.forcedReason;
+
+    if (this.resolvedFailures && this.resolvedFailures[qId]) {
+      delete this.resolvedFailures[qId];
+    }
 
     const question = this.questions.find(q => String(q.id) === qId);
     this.failures[qId] = {
@@ -357,6 +464,8 @@ class ExamStore {
       questionsCount: this.questions.length,
       answers: this.answers,
       failures: this.failures,
+      resolvedFailures: this.resolvedFailures,
+      recallHistory: this.recallHistory,
       doubts: this.doubts,
       mnemonics: this.mnemonics,
       pomodoroStats: this.pomodoroStats,
@@ -373,6 +482,8 @@ class ExamStore {
       const data = typeof jsonContent === "string" ? JSON.parse(jsonContent) : jsonContent;
       if (data.answers) this.answers = data.answers;
       if (data.failures) this.failures = data.failures;
+      if (data.resolvedFailures) this.resolvedFailures = data.resolvedFailures;
+      if (data.recallHistory) this.recallHistory = data.recallHistory;
       if (data.doubts) this.doubts = data.doubts;
       if (data.mnemonics) this.mnemonics = data.mnemonics;
       if (data.pomodoroStats) this.pomodoroStats = data.pomodoroStats;
@@ -415,6 +526,8 @@ class ExamStore {
   resetAll() {
     this.answers = {};
     this.failures = {};
+    this.resolvedFailures = {};
+    this.recallHistory = [];
     this.doubts = {};
     this.mnemonics = {};
     this.pomodoroStats = { completedSessions: 0, totalFocusMinutes: 0 };
