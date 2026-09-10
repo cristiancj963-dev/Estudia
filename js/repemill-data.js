@@ -77,6 +77,48 @@ const REPEMILL_DATA = {
         discardPattern: "Descartar VPC Peering (requiere CIDRs no solapados, enruta bidireccionalmente y expone toda la red).",
         category: "Networking & Security",
         mnemonic: "PrivateLink = Enchufe unidireccional privado a través del hipervisor. Cero exposición a Internet."
+      },
+      {
+        trigger: "Asociar Route 53 Private Hosted Zone en Cuenta A con VPC en Cuenta B (Cross-Account DNS)",
+        optimalService: "Cuenta A ejecuta CreateVPCAssociationAuthorization para autorizar la VPC + Cuenta B ejecuta AssociateVPCWithHostedZone (y borrar autorización tras asociar)",
+        discardPattern: "Descartar replicar o duplicar zonas privadas entre cuentas (Route 53 no admite replicación entre cuentas). Descartar editar /etc/resolv.conf con IPs estáticas.",
+        category: "DNS & Multi-Account",
+        mnemonic: "Private Hosted Zone Cross-Account = 1º Cuenta A autoriza (CreateVPCAssociationAuthorization) -> 2º Cuenta B asocia (AssociateVPCWithHostedZone)."
+      },
+      {
+        trigger: "Direct Connect redundante + expansión hacia múltiples Regiones (Multi-Region) con mínima sobrecarga",
+        optimalService: "Direct Connect Gateway (DXGW) con Private VIFs hacia múltiples VPCs en distintas Regiones de AWS",
+        discardPattern: "Descartar Transit Gateway si no hay routing inter-VPC complejo (DXGW es directo y no cobra procesamiento por GB de TGW). Descartar Public VIF (la VIF pública es solo para servicios públicos como S3). Descartar conectar VGW directo sin DXGW (un VGW solo llega a una única región).",
+        category: "Hybrid Networking",
+        mnemonic: "DXGW = El pasaporte global de Direct Connect para llegar a múltiples Regiones con VIF privada."
+      },
+      {
+        trigger: "Ingesta y análisis de medios (vídeos/fotos) con picos de tráfico + sustituir software custom + reducir sobrecarga operativa (Serverless)",
+        optimalService: "Frontend estático en Amazon S3 + S3 Event Notifications a Amazon SQS + AWS Lambda worker + Amazon Rekognition",
+        discardPattern: "Descartar Elastic Beanstalk o flotas de EC2/EFS que mantienen servidores aprovisionados con coste ocioso continuo. Descartar la respuesta oficial desactualizada (D) y forzar C avalada por la comunidad (86% serverless).",
+        category: "Serverless & Media Processing",
+        mnemonic: "Subida de medios a picos = S3 Event Notification -> SQS -> Lambda -> Rekognition. Cero servidores aprovisionados."
+      },
+      {
+        trigger: "Federar Active Directory On-Premises con múltiples cuentas en AWS Organizations + gestión centralizada en un solo punto + SCIM / SAML 2.0",
+        optimalService: "AWS IAM Identity Center (Single Sign-On) con SAML 2.0 hacia AD + aprovisionamiento automático SCIM v2.0 + ABAC / Permission Sets",
+        discardPattern: "Descartar crear usuarios o roles IAM individualmente en cada cuenta miembro (rompe el requisito explícito de gestión en una sola ubicación). Descartar OIDC para Active Directory clásico local.",
+        category: "Identity & Governance",
+        mnemonic: "Organizations + Active Directory = IAM Identity Center (AWS SSO) + SCIM. Gestión en 1 solo punto centralizado."
+      },
+      {
+        trigger: "Cálculo batch / HPC sobre gran volumen (200 TB) que corre una vez al mes durante 72 horas + máxima reducción global de costes",
+        optimalService: "Datos persistentes en Amazon S3 (S3 Intelligent-Tiering) + clúster efímero de Amazon FSx for Lustre (lazy loading) creado para las 72h y destruido al terminar",
+        discardPattern: "Descartar mantener instancias EC2 o sistemas de almacenamiento dedicados encendidos todo el mes para un trabajo que solo dura 3 días. Descartar EBS Multi-Attach (máx 16 instancias Nitro, no cientos).",
+        category: "Storage & HPC Cost Reduction",
+        mnemonic: "HPC mensual puntual de 72h = S3 para reposo económico + FSx for Lustre efímero que se destruye tras el job."
+      },
+      {
+        trigger: "Tráfico TCP en puerto estático / no HTTP + IPs fijas para Allow Lists de clientes externos + alta disponibilidad Multi-AZ",
+        optimalService: "Network Load Balancer (NLB) con una Elastic IP fija por cada Availability Zone + Alias Record en Route 53",
+        discardPattern: "Descartar Application Load Balancer (ALB solo opera en Capa 7 HTTP/HTTPS y sus IPs cambian dinámicamente). Descartar Elastic IPs directas en instancias EC2 o contenedores (rompe la alta disponibilidad y la conmutación transparente ante fallos).",
+        category: "Load Balancing & Security",
+        mnemonic: "TCP + IPs fijas para Allow List externa = Network Load Balancer (NLB) con Elastic IPs fijas por cada AZ."
       }
     ]
   },
@@ -176,6 +218,13 @@ const REPEMILL_DATA = {
         discardPattern: "Descartar Volume Gateway Stored si se requiere ver los archivos como objetos directos en S3.",
         category: "Hybrid Storage",
         mnemonic: "S3 File Gateway = Ventana mágica en tu LAN que guarda en S3 como archivos y carpetas estándar."
+      },
+      {
+        trigger: "Conectar On-Premises vía Site-to-Site VPN a múltiples VPCs interconectadas (sin enrutamiento transitivo por Peering) con mínimo esfuerzo operativo",
+        optimalService: "AWS Transit Gateway (TGW) conectando la VPN, VPC A y VPC B en arquitectura Hub-and-Spoke",
+        discardPattern: "Descartar VPC Peering para tráfico on-premises (VPC Peering NO soporta enrutamiento transitivo edge-to-edge entre VPN y otra VPC). Descartar crear túneles VPN independientes punto a punto hacia cada VPC por sobrecarga operativa.",
+        category: "Hybrid Networking",
+        mnemonic: "VPC Peering es NO transitivo. Para que el centro on-premises hable con VPC B a través de AWS = Transit Gateway (TGW)."
       },
       {
         trigger: "Migrar servidores SFTP existentes sin cambiar clientes ni credenciales de usuario",
@@ -322,6 +371,13 @@ const REPEMILL_DATA = {
         discardPattern: "Descartar scripts de exportación periódica a S3 mediante cron (dejan ventanas de datos sin capturar ante fallos súbitos).",
         category: "Disaster Recovery",
         mnemonic: "PITR = Rebobinado de cinta de video al segundo exacto anterior al error del becario."
+      },
+      {
+        trigger: "Federación de identidades SAML 2.0 con IdP on-premises (resolución de problemas cuando usuarios no pueden autenticarse)",
+        optimalService: "Verificar Trust Policy del IAM Role (Principal: SAML Provider) + STS AssumeRoleWithSAML + Mapeo de aserciones SAML en el IdP",
+        discardPattern: "Descartar requerir conectividad directa desde las VPCs al IdP on-premises (la autenticación SAML es redirigida vía browser web del usuario, no desde la VPC). Descartar políticas sobre IAM Users (en federación SAML no se crean IAM Users locales en AWS).",
+        category: "Identity Federation & SAML",
+        mnemonic: "Flujo SAML 2.0 = Navegador -> IdP (afirmación SAML) -> STS AssumeRoleWithSAML -> IAM Role temporal. La VPC de AWS no contacta al IdP."
       }
     ]
   },
@@ -562,45 +618,116 @@ const REPEMILL_DATA = {
 };
 
 /**
- * Busca de forma inteligente el patrón Repemill más relevante para una pregunta específica
+ * Busca de forma inteligente y semántica el patrón Repemill más relevante para una pregunta específica.
+ * Realiza evaluación contextual cruzada con detección de pares arquitectónicos críticos.
  */
 function findBestPatternForQuestion(question) {
   if (!question) return null;
   const blockNum = question.blockNumber || 1;
-  const blockData = REPEMILL_DATA[blockNum];
-  const patterns = blockData ? blockData.patterns : [];
-  if (!patterns || patterns.length === 0) return null;
+  const localPatterns = (REPEMILL_DATA[blockNum] && REPEMILL_DATA[blockNum].patterns) || [];
+
+  // Recopilar todos los patrones del Repemill con su bloque de origen
+  const allPatterns = [];
+  for (const b in REPEMILL_DATA) {
+    for (const p of REPEMILL_DATA[b].patterns) {
+      allPatterns.push({ ...p, sourceBlock: parseInt(b) });
+    }
+  }
 
   const qText = ((question.question || "") + " " + Object.values(question.choices || {}).join(" ")).toLowerCase();
 
-  let bestPattern = patterns[0];
-  let highestScore = -1;
-
-  for (const p of patterns) {
+  // Función de puntuación semántica de alta precisión
+  function evaluatePattern(p) {
     let score = 0;
-    const triggerWords = (p.trigger + " " + p.optimalService).toLowerCase()
+    const triggerLower = p.trigger.toLowerCase();
+    const optimalLower = p.optimalService.toLowerCase();
+    const discardLower = (p.discardPattern || "").toLowerCase();
+    const combined = triggerLower + " " + optimalLower + " " + discardLower;
+
+    // 1. Coincidencias de pares técnicos clave de alta discriminación (+20 puntos)
+    const architecturalPairs = [
+      { terms: ["direct connect gateway", "dxgw"] },
+      { terms: ["fsx for lustre", "lustre"] },
+      { terms: ["iam identity center", "single sign-on", "aws sso"] },
+      { terms: ["scim", "scim v2.0", "provisioning"] },
+      { terms: ["active directory", "ad connector", "aws managed microsoft ad"] },
+      { terms: ["rekognition"] },
+      { terms: ["network load balancer", "nlb", "tcp on a static port", "fixed address assignments", "allow list", "allow lists"] },
+      { terms: ["association authorization", "createvpcassociationauthorization", "associatevpcwithhostedzone"] },
+      { terms: ["transit gateway", "tgw"] },
+      { terms: ["inbound resolver", "inbound endpoint"] },
+      { terms: ["outbound resolver", "outbound endpoint"] },
+      { terms: ["aurora global database"] },
+      { terms: ["dynamodb global tables", "global table"] },
+      { terms: ["vault lock", "compliance mode"] },
+      { terms: ["intelligent-tiering"] },
+      { terms: ["eventbridge"] },
+      { terms: ["privatelink", "interface vpc endpoint", "endpoint service"] },
+      { terms: ["macie", "pii"] },
+      { terms: ["guardduty"] },
+      { terms: ["step functions"] },
+      { terms: ["kinesis data firehose", "firehose"] },
+      { terms: ["kinesis data streams"] },
+      { terms: ["transfer family", "sftp"] },
+      { terms: ["s3 event notification", "s3 event notifications"] },
+      { terms: ["elasticache", "redis", "memcached"] },
+      { terms: ["saml 2.0", "saml", "idp", "assumerolewithsaml", "federated identity"] }
+    ];
+
+    for (const pair of architecturalPairs) {
+      const inPattern = pair.terms.some(t => combined.includes(t));
+      const inQuestion = pair.terms.some(t => qText.includes(t));
+      if (inPattern && inQuestion) {
+        score += 20;
+      }
+    }
+
+    // 2. Coincidencias de servicios AWS (+6 puntos)
+    const services = [
+      "route 53", "transit gateway", "direct connect", "privatelink", "aurora",
+      "dynamodb", "sqs", "sns", "kinesis", "step functions", "lambda", "ecs",
+      "fargate", "s3", "macie", "guardduty", "secrets manager", "kms",
+      "systems manager", "config", "control tower", "transfer family", "storage gateway",
+      "waf", "shield", "opensearch", "cloudwatch", "organizations", "scp",
+      "elasticache", "alb", "nlb", "fsx", "backup", "elastic beanstalk"
+    ];
+    for (const s of services) {
+      if (optimalLower.includes(s) && qText.includes(s)) {
+        score += 6;
+      }
+    }
+
+    // 3. Coincidencias de términos discriminadores del trigger (+3 puntos)
+    const triggerWords = triggerLower
       .replace(/[^a-z0-9\s]/g, " ")
       .split(/\s+/)
-      .filter(w => w.length >= 4 && !["para", "with", "from", "that", "this", "este", "esta", "como", "sobre"].includes(w));
+      .filter(w => w.length >= 4 && !["para", "with", "from", "that", "this", "este", "esta", "como", "sobre", "entre", "cuenta", "solucion"].includes(w));
 
-    for (const w of triggerWords) {
-      if (qText.includes(w)) {
+    for (const tw of triggerWords) {
+      if (qText.includes(tw)) {
         score += 2;
       }
     }
 
-    const services = ["route 53", "transit gateway", "direct connect", "privatelink", "aurora", "dynamodb", "sqs", "sns", "kinesis", "step functions", "lambda", "ecs", "fargate", "s3", "macie", "guardduty", "secrets manager", "kms", "systems manager", "config", "control tower", "transfer family", "storage gateway", "waf", "shield", "opensearch", "cloudwatch", "organizations", "scp", "elasticache", "alb", "nlb"];
-    for (const s of services) {
-      if (p.optimalService.toLowerCase().includes(s) && qText.includes(s)) {
-        score += 5;
-      }
+    // Bonificación de afinidad local por pertenecer al bloque actual
+    if (p.sourceBlock === blockNum) {
+      score += 5;
     }
 
+    return score;
+  }
+
+  let bestPattern = localPatterns[0] || allPatterns[0];
+  let highestScore = -1;
+
+  for (const p of allPatterns) {
+    const score = evaluatePattern(p);
     if (score > highestScore) {
       highestScore = score;
       bestPattern = p;
     }
   }
+
   return bestPattern;
 }
 

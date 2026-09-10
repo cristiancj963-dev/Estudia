@@ -740,7 +740,7 @@ class App {
           <div class="flex items-center justify-between text-xs text-slate-400 pb-3 border-b border-slate-800/80">
             <span class="font-mono font-bold text-indigo-400 uppercase tracking-wider">Identificador: Q#${q.questionNumber}</span>
             <div class="flex items-center gap-2">
-              ${q.communityVote ? `<span class="bg-slate-800 text-slate-300 px-2 py-0.5 rounded text-[11px] font-mono">Comunidad: ${q.communityVote}</span>` : ''}
+              ${isAnswered && q.communityVote ? `<span class="bg-slate-800 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded text-[11px] font-mono">Comunidad: ${q.communityVote}</span>` : ''}
               <span class="bg-slate-800 text-slate-300 px-2 py-0.5 rounded text-[11px] font-mono">Bloque ${q.blockNumber}</span>
             </div>
           </div>
