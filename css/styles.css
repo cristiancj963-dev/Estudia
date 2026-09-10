@@ -45,8 +45,8 @@ body {
   letter-spacing: -0.011em;
 }
 
-/* Animación de pulso para el Pomodoro Activo */
-@keyframes pomodoroPulse {
+/* Animación de pulso para el Modo Foco Activo */
+@keyframes focusPulse {
   0%, 100% {
     box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.4);
   }
@@ -54,8 +54,9 @@ body {
     box-shadow: 0 0 0 8px rgba(99, 102, 241, 0);
   }
 }
-.pomodoro-active-pulse {
-  animation: pomodoroPulse 2.5s infinite cubic-bezier(0.4, 0, 0.6, 1);
+.pomodoro-active-pulse,
+.focus-active-pulse {
+  animation: focusPulse 2.5s infinite cubic-bezier(0.4, 0, 0.6, 1);
 }
 
 /* Atajos de teclado en UI */

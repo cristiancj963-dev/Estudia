@@ -1,9 +1,9 @@
 /**
- * CRONÓMETRO POMODORO DE ALTO RENDIMIENTO
+ * CRONÓMETRO DE FOCO Y ALTO RENDIMIENTO
  * 35 Minutos de Enfoque Profundo + Alerta en Pico de Rendimiento + Web Audio API
  */
 
-class PomodoroTimer {
+class FocusTimer {
   constructor(options = {}) {
     this.focusDuration = options.focusDuration || 35 * 60; // 35 min
     this.breakDuration = options.breakDuration || 5 * 60;   // 5 min
@@ -152,6 +152,8 @@ class PomodoroTimer {
   }
 }
 
+const PomodoroTimer = FocusTimer;
+
 if (typeof module !== 'undefined' && module.exports) {
-  module.exports = { PomodoroTimer };
+  module.exports = { PomodoroTimer, FocusTimer };
 }
