@@ -44,6 +44,7 @@ class App {
     this.setupEventListeners();
     this.setupKeyboardShortcuts();
     this.render();
+    this.renderPomodoroWidget(this.pomodoro.getTimeData());
   }
 
   async loadDefaultQuestions() {
@@ -108,7 +109,8 @@ class App {
         if (e.key === "Enter" || e.code === "Space") {
           e.preventDefault();
           const qId = String(q.id);
-          const alreadyAnswered = !!store.answers[qId];
+          const sessionAns = this.activeSession.sessionAnswers ? this.activeSession.sessionAnswers[qId] : null;
+          const alreadyAnswered = !!sessionAns;
           if (!alreadyAnswered && this.activeSession.userSelected.length > 0) {
             this.confirmAnswer();
           } else if (alreadyAnswered) {
@@ -144,6 +146,13 @@ class App {
           this.toggleZenMode();
           return;
         }
+
+        // Tecla T: Alternar Cronómetro Pomodoro (Foco Intenso manual)
+        if (keyUpper === "T") {
+          e.preventDefault();
+          this.pomodoro.toggle();
+          return;
+        }
       }
     });
   }
@@ -169,23 +178,31 @@ class App {
       return;
     }
 
+    // Inicializar sessionAnswers precargando las respuestas del store para este bloque
+    // Esto permite que el usuario revise un bloque completado con todas sus respuestas ya marcadas
+    const sessionAnswers = {};
+    questions.forEach(q => {
+      const saved = store.answers[String(q.id)];
+      if (saved) {
+        sessionAnswers[String(q.id)] = { ...saved };
+      }
+    });
+
+    const firstQ = questions[0];
+    const firstSaved = firstQ ? sessionAnswers[String(firstQ.id)] : null;
+
     this.activeSession = {
       type: "block",
       blockNumber: blockNumber,
       title: `Sesión ${blockNumber}: Preguntas Q${startIdx + 1} - Q${endIdx}`,
       questions: questions,
       currentIndex: 0,
-      userSelected: []
+      userSelected: firstSaved ? [...firstSaved.selected] : [],
+      sessionAnswers: sessionAnswers,
+      startedAt: new Date().toISOString()
     };
 
-    // Cargar si la primera pregunta ya tenía respuesta guardada
-    const firstQ = questions[0];
-    const saved = store.answers[String(firstQ.id)];
-    if (saved) {
-      this.activeSession.userSelected = [...saved.selected];
-    }
-
-    this.pomodoro.start();
+    // No activar foco intenso automáticamente: el usuario lo inicia manualmente cuando lo desee
     this.navigate("test");
   }
 
@@ -199,24 +216,27 @@ class App {
     this.activeSession = {
       type: "recall_24h",
       blockNumber: 0,
-      title: `Active Recall 24h: ${recallQuestions.length} Preguntas Críticas`,
+      title: `Active Recall: ${recallQuestions.length} Preguntas Críticas`,
       questions: recallQuestions,
       currentIndex: 0,
-      userSelected: []
+      userSelected: [],
+      sessionAnswers: {}, // ¡Mesa limpia! Ninguna respuesta marcada para Active Recall en frío
+      startedAt: new Date().toISOString(),
+      initialNetScore: store.getGlobalStats().netScore
     };
 
-    const firstQ = recallQuestions[0];
-    const saved = store.answers[String(firstQ.id)];
-    if (saved) {
-      this.activeSession.userSelected = [...saved.selected];
-    }
-
-    this.pomodoro.start();
+    // No activar foco intenso automáticamente: el usuario lo inicia manualmente cuando lo desee
     this.navigate("test");
   }
 
   toggleOptionSelection(letter) {
     const q = this.activeSession.questions[this.activeSession.currentIndex];
+    if (!q) return;
+
+    // Si ya está respondida o en modo revisión, no permitir modificar la selección
+    const sessionAns = this.activeSession.sessionAnswers ? this.activeSession.sessionAnswers[String(q.id)] : null;
+    if (sessionAns) return;
+
     const isMulti = (q.multiSelectCount || 1) > 1;
 
     if (isMulti) {
@@ -239,19 +259,32 @@ class App {
 
   confirmAnswer() {
     const q = this.activeSession.questions[this.activeSession.currentIndex];
+    const qId = String(q.id);
     const selectedSorted = [...this.activeSession.userSelected].sort().join("");
     const correctSorted = q.correctAnswer.split("").sort().join("");
     const isCorrect = selectedSorted === correctSorted;
 
+    // Guardar en sessionAnswers de la sesión activa
+    if (!this.activeSession.sessionAnswers) this.activeSession.sessionAnswers = {};
+    this.activeSession.sessionAnswers[qId] = {
+      selected: [...this.activeSession.userSelected],
+      isCorrect: isCorrect,
+      timestamp: new Date().toISOString()
+    };
+
     // Registrar en el Store persistente
-    store.recordAnswer(q.id, this.activeSession.userSelected, isCorrect, q.question.slice(0, 100));
+    if (this.activeSession.type === "recall_24h") {
+      store.recordRecallAnswer(q.id, this.activeSession.userSelected, isCorrect, q.question.slice(0, 100));
+    } else {
+      store.recordAnswer(q.id, this.activeSession.userSelected, isCorrect, q.question.slice(0, 100));
+    }
 
     // Feedback sonoro sintético
     if (store.settings.soundEnabled) {
       if (isCorrect) {
-        this.pomodoro.playTone(880, "sine", 0.12, 0.08); // La alto agradable
+        this.pomodoro.playTone(880, "sine", 0.12, 0.08);
       } else {
-        this.pomodoro.playTone(220, "sawtooth", 0.25, 0.1); // Tono grave de error
+        this.pomodoro.playTone(220, "sawtooth", 0.25, 0.1);
       }
     }
 
@@ -260,9 +293,10 @@ class App {
     // Avance rápido automático si acierta y está configurado
     if (isCorrect && store.settings.autoAdvanceOnCorrect) {
       setTimeout(() => {
-        // Solo avanzar si sigue en la misma pregunta y no ha hecho clic en otro lado
-        if (this.activeSession.questions[this.activeSession.currentIndex].id === q.id) {
-          this.nextQuestion();
+        if (this.activeSession.questions[this.activeSession.currentIndex] && this.activeSession.questions[this.activeSession.currentIndex].id === q.id) {
+          if (this.activeSession.currentIndex < this.activeSession.questions.length - 1) {
+            this.nextQuestion();
+          }
         }
       }, 900);
     }
@@ -272,17 +306,13 @@ class App {
     if (this.activeSession.currentIndex < this.activeSession.questions.length - 1) {
       this.activeSession.currentIndex++;
       const nextQ = this.activeSession.questions[this.activeSession.currentIndex];
-      const saved = store.answers[String(nextQ.id)];
-      this.activeSession.userSelected = saved ? [...saved.selected] : [];
+      const sessionAns = this.activeSession.sessionAnswers ? this.activeSession.sessionAnswers[String(nextQ.id)] : null;
+      this.activeSession.userSelected = sessionAns ? [...sessionAns.selected] : [];
       this.renderTestView();
       window.scrollTo(0, 0);
     } else {
-      // Fin del bloque: Celebración de Parkinson
-      if (window.confetti) {
-        window.confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
-      }
-      this.showToast("🎉 ¡Bloque de 25 preguntas finalizado! Has completado el ciclo de Parkinson.", "success", 6000);
-      this.navigate("dashboard");
+      // Si está en la última pregunta, sugerir finalizar la sesión
+      this.requestFinishSession();
     }
   }
 
@@ -290,8 +320,8 @@ class App {
     if (this.activeSession.currentIndex > 0) {
       this.activeSession.currentIndex--;
       const prevQ = this.activeSession.questions[this.activeSession.currentIndex];
-      const saved = store.answers[String(prevQ.id)];
-      this.activeSession.userSelected = saved ? [...saved.selected] : [];
+      const sessionAns = this.activeSession.sessionAnswers ? this.activeSession.sessionAnswers[String(prevQ.id)] : null;
+      this.activeSession.userSelected = sessionAns ? [...sessionAns.selected] : [];
       this.renderTestView();
       window.scrollTo(0, 0);
     }
@@ -301,11 +331,222 @@ class App {
     if (index >= 0 && index < this.activeSession.questions.length) {
       this.activeSession.currentIndex = index;
       const targetQ = this.activeSession.questions[this.activeSession.currentIndex];
-      const saved = store.answers[String(targetQ.id)];
-      this.activeSession.userSelected = saved ? [...saved.selected] : [];
+      const sessionAns = this.activeSession.sessionAnswers ? this.activeSession.sessionAnswers[String(targetQ.id)] : null;
+      this.activeSession.userSelected = sessionAns ? [...sessionAns.selected] : [];
       this.renderTestView();
       window.scrollTo(0, 0);
     }
+  }
+
+  requestFinishSession() {
+    const totalQ = this.activeSession.questions.length;
+    const answeredCount = Object.keys(this.activeSession.sessionAnswers || {}).length;
+    const unansweredCount = totalQ - answeredCount;
+
+    if (unansweredCount > 0) {
+      const typeLabel = this.activeSession.type === "recall_24h" ? "el simulacro de errores" : "el bloque";
+      const confirmMsg = `Tienes ${unansweredCount} pregunta(s) sin responder de ${totalQ}. ¿Seguro que deseas finalizar ${typeLabel} ahora?`;
+      if (!confirm(confirmMsg)) {
+        return;
+      }
+    }
+
+    this.finishSession();
+  }
+
+  finishSession() {
+    const isRecall = this.activeSession.type === "recall_24h";
+    const totalQ = this.activeSession.questions.length;
+    const sessionAnswers = this.activeSession.sessionAnswers || {};
+
+    let correctCount = 0;
+    let failedCount = 0;
+    let unansweredCount = 0;
+
+    this.activeSession.questions.forEach(q => {
+      const ans = sessionAnswers[String(q.id)];
+      if (ans) {
+        if (ans.isCorrect) correctCount++;
+        else failedCount++;
+      } else {
+        unansweredCount++;
+      }
+    });
+
+    if (window.confetti) {
+      window.confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
+    }
+
+    if (isRecall) {
+      const initialNet = this.activeSession.initialNetScore || 0;
+      const currentNet = store.getGlobalStats().netScore;
+      const netGain = +(currentNet - initialNet).toFixed(1);
+
+      const summary = {
+        totalQuestions: totalQ,
+        resolvedCount: correctCount,
+        failedCount: failedCount,
+        unansweredCount: unansweredCount,
+        netScoreBefore: initialNet,
+        netScoreAfter: currentNet,
+        netScoreGain: netGain
+      };
+
+      store.saveRecallSessionSummary(summary);
+      this.showRecallCompletionModal(summary);
+    } else {
+      const blockNum = this.activeSession.blockNumber;
+      const accuracy = (correctCount + failedCount) > 0 ? Math.round((correctCount / (correctCount + failedCount)) * 100) : 0;
+      const netScore = Math.max(0, +(correctCount - (failedCount / 3)).toFixed(1));
+
+      this.showBlockCompletionModal({
+        blockNumber: blockNum,
+        totalQuestions: totalQ,
+        correctCount,
+        failedCount,
+        unansweredCount,
+        accuracy,
+        netScore
+      });
+    }
+  }
+
+  openCompletionModal(htmlContent) {
+    const modal = document.getElementById("completion-modal");
+    const container = document.getElementById("completion-modal-content");
+    if (modal && container) {
+      container.innerHTML = htmlContent;
+      modal.classList.remove("hidden");
+      modal.classList.add("flex");
+      modal.style.display = "flex";
+      if (window.lucide) window.lucide.createIcons();
+    }
+  }
+
+  closeCompletionModal() {
+    const modal = document.getElementById("completion-modal");
+    if (modal) {
+      modal.classList.add("hidden");
+      modal.classList.remove("flex");
+      modal.style.display = "none";
+    }
+  }
+
+  showBlockCompletionModal(data) {
+    const content = `
+      <div class="text-center space-y-4">
+        <div class="w-16 h-16 rounded-3xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center mx-auto border border-emerald-500/30">
+          <i data-lucide="award" class="w-8 h-8"></i>
+        </div>
+
+        <div>
+          <span class="text-xs font-mono font-bold text-slate-400 uppercase tracking-wider">Sesión ${data.blockNumber} Finalizada</span>
+          <h2 class="text-2xl font-black text-white mt-1">¡Bloque Completado!</h2>
+          <p class="text-xs text-slate-400 mt-1">Has completado el ciclo de estudio de este bloque.</p>
+        </div>
+
+        <!-- Grid de Estadísticas del Bloque -->
+        <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
+          <div class="bg-slate-950/80 p-3 rounded-2xl border border-slate-800 text-center">
+            <span class="text-[10px] uppercase font-bold text-slate-400 block">Punt. Neta</span>
+            <span class="text-xl font-extrabold text-indigo-400 font-mono">${data.netScore}</span>
+          </div>
+          <div class="bg-slate-950/80 p-3 rounded-2xl border border-slate-800 text-center">
+            <span class="text-[10px] uppercase font-bold text-slate-400 block">Precisión</span>
+            <span class="text-xl font-extrabold ${data.accuracy >= 75 ? 'text-emerald-400' : 'text-amber-400'} font-mono">${data.accuracy}%</span>
+          </div>
+          <div class="bg-slate-950/80 p-3 rounded-2xl border border-slate-800 text-center">
+            <span class="text-[10px] uppercase font-bold text-slate-400 block">Aciertos</span>
+            <span class="text-xl font-extrabold text-emerald-400 font-mono">${data.correctCount}</span>
+          </div>
+          <div class="bg-slate-950/80 p-3 rounded-2xl border border-slate-800 text-center">
+            <span class="text-[10px] uppercase font-bold text-slate-400 block">Fallos</span>
+            <span class="text-xl font-extrabold text-rose-400 font-mono">${data.failedCount}</span>
+          </div>
+        </div>
+
+        ${data.unansweredCount > 0 ? `
+          <div class="text-[11px] text-amber-300 bg-amber-950/40 border border-amber-500/30 p-2.5 rounded-xl">
+            ⚠️ Dejaste ${data.unansweredCount} pregunta(s) sin responder en este bloque.
+          </div>
+        ` : ''}
+
+        <!-- Botones de Acción -->
+        <div class="pt-4 flex flex-col sm:flex-row items-center justify-center gap-3 border-t border-slate-800">
+          <button onclick="app.closeCompletionModal()" class="w-full sm:w-auto flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-5 py-2.5 rounded-xl text-xs transition">
+            <i data-lucide="eye" class="w-4 h-4"></i>
+            <span>Revisar Respuestas</span>
+          </button>
+          <button onclick="app.closeCompletionModal(); app.navigate('dashboard')" class="w-full sm:w-auto flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold px-5 py-2.5 rounded-xl text-xs border border-slate-700 transition">
+            <i data-lucide="layout-dashboard" class="w-4 h-4"></i>
+            <span>Dashboard</span>
+          </button>
+          <button onclick="app.closeCompletionModal(); app.openSyncModal()" class="w-full sm:w-auto flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-cyan-400 font-semibold px-5 py-2.5 rounded-xl text-xs border border-slate-700 transition">
+            <i data-lucide="cloud-upload" class="w-4 h-4"></i>
+            <span>Subir a Drive</span>
+          </button>
+        </div>
+      </div>
+    `;
+    this.openCompletionModal(content);
+  }
+
+  showRecallCompletionModal(data) {
+    const content = `
+      <div class="text-center space-y-4">
+        <div class="w-16 h-16 rounded-3xl bg-indigo-600/20 text-indigo-400 flex items-center justify-center mx-auto border border-indigo-500/30">
+          <i data-lucide="flame" class="w-8 h-8 text-amber-400"></i>
+        </div>
+
+        <div>
+          <span class="text-xs font-mono font-bold text-slate-400 uppercase tracking-wider">Simulacro Dinámico de Errores</span>
+          <h2 class="text-2xl font-black text-white mt-1">¡Consolidación Finalizada!</h2>
+          <p class="text-xs text-slate-400 mt-1">Has reevaluado ${data.totalQuestions} preguntas críticas en Active Recall.</p>
+        </div>
+
+        <!-- Tarjetas de Consolidación -->
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-2">
+          <div class="bg-emerald-950/30 border border-emerald-500/40 p-4 rounded-2xl text-center">
+            <span class="text-2xl font-black text-emerald-400 font-mono block">${data.resolvedCount}</span>
+            <span class="text-xs font-bold text-emerald-300 block mt-1">Errores Superados</span>
+            <span class="text-[10px] text-slate-400 block mt-0.5">Eliminados de Base Roja</span>
+          </div>
+
+          <div class="bg-rose-950/30 border border-rose-500/40 p-4 rounded-2xl text-center">
+            <span class="text-2xl font-black text-rose-400 font-mono block">${data.failedCount}</span>
+            <span class="text-xs font-bold text-rose-300 block mt-1">Errores Persistentes</span>
+            <span class="text-[10px] text-slate-400 block mt-0.5">Pendientes de repaso 24h</span>
+          </div>
+
+          <div class="bg-indigo-950/30 border border-indigo-500/40 p-4 rounded-2xl text-center">
+            <span class="text-2xl font-black text-indigo-400 font-mono block">${data.netScoreGain >= 0 ? '+' : ''}${data.netScoreGain}</span>
+            <span class="text-xs font-bold text-indigo-300 block mt-1">Puntuación Neta</span>
+            <span class="text-[10px] text-slate-400 block mt-0.5">Recuperada en el total</span>
+          </div>
+        </div>
+
+        <!-- Botones de Acción -->
+        <div class="pt-4 flex flex-col sm:flex-row items-center justify-center gap-3 border-t border-slate-800">
+          <button onclick="app.closeCompletionModal()" class="w-full sm:w-auto flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-5 py-2.5 rounded-xl text-xs transition">
+            <i data-lucide="eye" class="w-4 h-4"></i>
+            <span>Revisar Preguntas</span>
+          </button>
+          <button onclick="app.closeCompletionModal(); app.navigate('failures')" class="w-full sm:w-auto flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-rose-300 font-semibold px-5 py-2.5 rounded-xl text-xs border border-slate-700 transition">
+            <i data-lucide="alert-octagon" class="w-4 h-4"></i>
+            <span>Base de Fallos</span>
+          </button>
+          <button onclick="app.closeCompletionModal(); app.navigate('dashboard')" class="w-full sm:w-auto flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold px-5 py-2.5 rounded-xl text-xs border border-slate-700 transition">
+            <i data-lucide="layout-dashboard" class="w-4 h-4"></i>
+            <span>Dashboard</span>
+          </button>
+          <button onclick="app.closeCompletionModal(); app.openSyncModal()" class="w-full sm:w-auto flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-cyan-400 font-semibold px-5 py-2.5 rounded-xl text-xs border border-slate-700 transition">
+            <i data-lucide="cloud-upload" class="w-4 h-4"></i>
+            <span>Subir a Drive</span>
+          </button>
+        </div>
+      </div>
+    `;
+    this.openCompletionModal(content);
   }
 
   toggleCurrentDoubt() {
@@ -341,7 +582,16 @@ class App {
   }
 
   forceCorrectAnswer(questionId) {
+    const qId = String(questionId);
     store.forceCorrect(questionId, "Alineado con consenso de la comunidad");
+
+    // Sincronizar inmediatamente la sesión activa (simulacro o bloque en revisión/curso)
+    if (this.activeSession && this.activeSession.sessionAnswers && this.activeSession.sessionAnswers[qId]) {
+      this.activeSession.sessionAnswers[qId].isCorrect = true;
+      this.activeSession.sessionAnswers[qId].forcedCorrect = true;
+      this.activeSession.sessionAnswers[qId].forcedReason = "Alineado con consenso de la comunidad";
+    }
+
     if (store.settings.soundEnabled) {
       this.pomodoro.playTone(880, "sine", 0.12, 0.08);
     }
@@ -350,7 +600,16 @@ class App {
   }
 
   revertCorrectAnswer(questionId) {
+    const qId = String(questionId);
     store.revertToIncorrect(questionId);
+
+    // Sincronizar inmediatamente la sesión activa
+    if (this.activeSession && this.activeSession.sessionAnswers && this.activeSession.sessionAnswers[qId]) {
+      this.activeSession.sessionAnswers[qId].isCorrect = false;
+      this.activeSession.sessionAnswers[qId].forcedCorrect = false;
+      delete this.activeSession.sessionAnswers[qId].forcedReason;
+    }
+
     this.showToast("Respuesta devuelta a estado de fallo original.", "info");
     this.renderTestView();
   }
@@ -444,6 +703,12 @@ function doPost(e) {
       summarySheet.appendRow(["Fallos Registrados", data.stats.totalFailed || 0]);
       summarySheet.appendRow(["Preguntas en Duda", data.stats.totalDoubtful || 0]);
       summarySheet.appendRow(["Sesiones Foco Pomodoro", (data.pomodoroStats && data.pomodoroStats.completedSessions) || 0]);
+      if (data.resolvedFailures) {
+        summarySheet.appendRow(["Errores Consolidados/Superados", Object.keys(data.resolvedFailures).length]);
+      }
+      if (data.recallHistory) {
+        summarySheet.appendRow(["Simulacros de Errores Realizados", data.recallHistory.length]);
+      }
     }
     
     summarySheet.getRange("A1:B1").setFontWeight("bold").setBackground("#4f46e5").setFontColor("#ffffff");
@@ -752,31 +1017,43 @@ function doPost(e) {
 
   renderPomodoroWidget(data) {
     const el = document.getElementById("pomodoro-display");
-    if (!el) return;
+    if (el) {
+      const modeLabel = data.mode === "focus" ? "Foco Intenso" : "Descanso";
+      const playIcon = data.isRunning ? "pause" : "play";
 
-    const modeLabel = data.mode === "focus" ? "Foco Intenso" : "Descanso";
-    const modeBadgeClass = data.mode === "focus" ? "bg-indigo-500/20 text-indigo-400 border-indigo-500/30" : "bg-emerald-500/20 text-emerald-400 border-emerald-500/30";
-    const playIcon = data.isRunning ? "pause" : "play";
-
-    el.innerHTML = `
-      <div class="flex items-center gap-2 sm:gap-3 bg-slate-900/80 backdrop-blur border border-slate-800 rounded-xl px-3 py-1.5 shadow-lg ${data.isRunning && data.mode === 'focus' ? 'pomodoro-active-pulse' : ''}">
-        <div class="flex flex-col">
-          <div class="flex items-center gap-1.5">
-            <span class="inline-block w-2 h-2 rounded-full ${data.isRunning ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}"></span>
-            <span class="text-xs font-mono font-bold tracking-tight text-white text-base">${data.formatted}</span>
+      el.innerHTML = `
+        <div class="flex items-center gap-2 sm:gap-3 bg-slate-900/80 backdrop-blur border border-slate-800 rounded-xl px-3 py-1.5 shadow-lg ${data.isRunning && data.mode === 'focus' ? 'pomodoro-active-pulse' : ''}">
+          <div class="flex flex-col">
+            <div class="flex items-center gap-1.5">
+              <span class="inline-block w-2 h-2 rounded-full ${data.isRunning ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}"></span>
+              <span class="text-xs font-mono font-bold tracking-tight text-white text-base">${data.formatted}</span>
+            </div>
+            <span class="text-[10px] uppercase tracking-wider font-semibold text-slate-400">${modeLabel}</span>
           </div>
-          <span class="text-[10px] uppercase tracking-wider font-semibold text-slate-400">${modeLabel}</span>
+          <div class="flex items-center gap-1">
+            <button onclick="app.pomodoro.toggle()" class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition" title="${data.isRunning ? 'Pausar Foco' : 'Iniciar Foco Intenso'}">
+              <i data-lucide="${playIcon}" class="w-3.5 h-3.5"></i>
+            </button>
+            <button onclick="app.pomodoro.reset()" class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition" title="Reiniciar">
+              <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i>
+            </button>
+          </div>
         </div>
-        <div class="flex items-center gap-1">
-          <button onclick="app.pomodoro.toggle()" class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition" title="${data.isRunning ? 'Pausar' : 'Iniciar'}">
-            <i data-lucide="${playIcon}" class="w-3.5 h-3.5"></i>
-          </button>
-          <button onclick="app.pomodoro.reset()" class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition" title="Reiniciar">
-            <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i>
-          </button>
-        </div>
-      </div>
-    `;
+      `;
+    }
+
+    const testPomoBtn = document.getElementById("test-pomo-btn");
+    if (testPomoBtn) {
+      testPomoBtn.innerHTML = `
+        <i data-lucide="${data.isRunning ? 'pause' : 'play'}" class="w-3.5 h-3.5 ${data.isRunning ? 'text-indigo-400' : ''}"></i>
+        <span class="font-mono text-xs font-bold">${data.formatted}</span>
+        <span class="hidden xl:inline text-[10px] uppercase font-semibold text-slate-400 ml-0.5">${data.mode === 'focus' ? 'Foco' : 'Descanso'}</span>
+        <span class="key-badge ml-1 hidden lg:inline-flex">T</span>
+      `;
+      testPomoBtn.className = `flex items-center gap-1.5 text-xs font-semibold py-1.5 px-2.5 rounded-lg border transition ${data.isRunning ? 'bg-indigo-600/30 text-indigo-300 border-indigo-500/50 pomodoro-active-pulse' : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200'}`;
+      testPomoBtn.title = `${data.isRunning ? 'Pausar Foco Intenso' : 'Activar Foco Intenso Manualmente'} [T]`;
+    }
+
     if (window.lucide) window.lucide.createIcons();
   }
 
@@ -971,9 +1248,9 @@ function doPost(e) {
         </div>
 
         <div class="flex items-center gap-2 pt-2 border-t border-slate-800/80">
-          <button onclick="app.startBlockSession(${b.blockNumber})" class="flex-1 flex items-center justify-center gap-1.5 bg-indigo-600 hover:bg-indigo-500 text-white py-2 px-3 rounded-xl text-xs font-semibold transition shadow-sm">
-            <i data-lucide="play" class="w-3.5 h-3.5"></i>
-            <span>${b.status === 'completed' ? 'Repetir Test' : (b.status === 'in_progress' ? 'Continuar' : 'Comenzar')}</span>
+          <button onclick="app.startBlockSession(${b.blockNumber})" class="flex-1 flex items-center justify-center gap-1.5 ${b.status === 'completed' ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-indigo-600 hover:bg-indigo-500'} text-white py-2 px-3 rounded-xl text-xs font-semibold transition shadow-sm">
+            <i data-lucide="${b.status === 'completed' ? 'eye' : 'play'}" class="w-3.5 h-3.5"></i>
+            <span>${b.status === 'completed' ? 'Revisar Respuestas' : (b.status === 'in_progress' ? 'Continuar' : 'Comenzar')}</span>
           </button>
 
           ${b.answered > 0 ? `
@@ -1001,8 +1278,10 @@ function doPost(e) {
     const q = this.activeSession.questions[this.activeSession.currentIndex];
     const totalQ = this.activeSession.questions.length;
     const qId = String(q.id);
-    const existingAnswer = store.answers[qId];
-    const isAnswered = !!existingAnswer;
+    const sessionAns = this.activeSession.sessionAnswers ? this.activeSession.sessionAnswers[qId] : null;
+    const isAnswered = !!sessionAns;
+    const existingAnswer = sessionAns;
+    const answeredSelected = sessionAns ? (sessionAns.selected || []) : [];
     const isDoubt = store.isDoubt(q.id);
     const userMnemonic = store.getMnemonic(q.id);
 
@@ -1044,6 +1323,13 @@ function doPost(e) {
               <span class="hidden md:inline">Repemill</span>
             </button>
 
+            <!-- Botón Finalizar Bloque / Simulacro -->
+            <button onclick="app.requestFinishSession()" class="flex items-center gap-1.5 text-xs font-bold py-1.5 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition" title="Finalizar Sesión y ver Resumen">
+              <i data-lucide="check-square" class="w-3.5 h-3.5"></i>
+              <span class="hidden sm:inline">Finalizar</span>
+              <span>${this.activeSession.type === 'recall_24h' ? 'Simulacro' : 'Bloque'}</span>
+            </button>
+
             <!-- Botón Reiniciar Bloque en Curso -->
             ${this.activeSession.type === 'block' ? `
               <button onclick="app.confirmResetBlock(${this.activeSession.blockNumber})" class="flex items-center gap-1 text-xs font-semibold py-1.5 px-2.5 rounded-lg bg-slate-800 hover:bg-rose-950/60 text-slate-400 hover:text-rose-300 border border-slate-700 transition" title="Reiniciar este Bloque">
@@ -1052,6 +1338,14 @@ function doPost(e) {
               </button>
             ` : ''}
 
+            <!-- Botón Foco Intenso (Manual) -->
+            <button id="test-pomo-btn" onclick="app.pomodoro.toggle()" class="flex items-center gap-1.5 text-xs font-semibold py-1.5 px-2.5 rounded-lg border transition ${this.pomodoro.isRunning ? 'bg-indigo-600/30 text-indigo-300 border-indigo-500/50 pomodoro-active-pulse' : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200'}" title="${this.pomodoro.isRunning ? 'Pausar Foco Intenso' : 'Activar Foco Intenso Manualmente'} [T]">
+              <i data-lucide="${this.pomodoro.isRunning ? 'pause' : 'play'}" class="w-3.5 h-3.5 ${this.pomodoro.isRunning ? 'text-indigo-400' : ''}"></i>
+              <span class="font-mono text-xs font-bold">${this.pomodoro.getTimeData().formatted}</span>
+              <span class="hidden xl:inline text-[10px] uppercase font-semibold text-slate-400 ml-0.5">${this.pomodoro.getTimeData().mode === 'focus' ? 'Foco' : 'Descanso'}</span>
+              <span class="key-badge ml-1 hidden lg:inline-flex">T</span>
+            </button>
+
             <!-- Modo Zen -->
             <button onclick="app.toggleZenMode()" class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition" title="Modo Zen [Z]">
               <i data-lucide="${store.settings.zenMode ? 'minimize-2' : 'maximize-2'}" class="w-4 h-4"></i>
@@ -1059,10 +1353,10 @@ function doPost(e) {
           </div>
         </div>
 
-        <!-- Matriz Rápida de Preguntas del Bloque -->
+        <!-- Matriz Rápida de Preguntas del Bloque / Simulacro -->
         <div class="flex items-center gap-1.5 overflow-x-auto py-1 px-0.5 no-scrollbar">
           ${this.activeSession.questions.map((item, idx) => {
-            const itemAns = store.answers[String(item.id)];
+            const itemAns = this.activeSession.sessionAnswers ? this.activeSession.sessionAnswers[String(item.id)] : null;
             let color = "bg-slate-800 text-slate-400 hover:bg-slate-700";
             if (itemAns) {
               color = itemAns.isCorrect ? "bg-emerald-600 text-white" : "bg-rose-600 text-white";
@@ -1099,9 +1393,11 @@ function doPost(e) {
           <!-- Opciones de Respuesta A, B, C, D... -->
           <div class="space-y-3 pt-2">
             ${choicesEntries.map(([letter, text], index) => {
-              const isSelected = this.activeSession.userSelected.includes(letter);
+              const isSelected = isAnswered
+                ? answeredSelected.includes(letter)
+                : this.activeSession.userSelected.includes(letter);
               const isOfficialCorrect = correctLetters.includes(letter);
-              const isForced = isAnswered && existingAnswer.forcedCorrect && isSelected;
+              const isForced = isAnswered && existingAnswer && existingAnswer.forcedCorrect && isSelected;
               let optionClass = "border-slate-800 bg-slate-800/40 hover:bg-slate-800/90 hover:border-slate-700 text-slate-200";
 
               if (isAnswered) {
@@ -1121,7 +1417,7 @@ function doPost(e) {
                 : 'bg-slate-800 text-slate-300 border border-slate-700';
 
               return `
-                <div onclick="app.toggleOptionSelection('${letter}')" class="flex items-start gap-4 p-4 rounded-2xl border ${optionClass} cursor-pointer transition-all">
+                <div onclick="app.toggleOptionSelection('${letter}')" class="flex items-start gap-4 p-4 rounded-2xl border ${optionClass} ${isAnswered ? 'cursor-default' : 'cursor-pointer'} transition-all">
                   <div class="flex items-center gap-2 pt-0.5">
                     <span class="w-6 h-6 rounded-lg flex items-center justify-center font-mono text-xs font-bold ${badgeColor}">
                       ${letter}
@@ -1139,25 +1435,44 @@ function doPost(e) {
             }).join("")}
           </div>
 
-          <!-- Botón de Confirmación / Avance -->
+          <!-- Botón de Confirmación / Avance / Finalizar -->
           <div class="pt-4 flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-slate-800">
             <div class="text-xs text-slate-400 flex items-center gap-2">
               <span class="key-badge">Espacio</span> o <span class="key-badge">Enter</span> para confirmar/avanzar
               <span class="key-badge">←</span> <span class="key-badge">→</span> navegar
             </div>
 
-            <div class="flex items-center gap-3 w-full sm:w-auto">
+            <div class="flex items-center gap-2 w-full sm:w-auto">
+              ${this.activeSession.currentIndex > 0 ? `
+                <button onclick="app.prevQuestion()" class="flex items-center gap-1 bg-slate-800 hover:bg-slate-700 text-slate-300 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition" title="Pregunta anterior [←]">
+                  <i data-lucide="arrow-left" class="w-3.5 h-3.5"></i>
+                  <span class="hidden sm:inline">Anterior</span>
+                </button>
+              ` : ''}
+
               ${!isAnswered ? `
-                <button onclick="app.confirmAnswer()" ${this.activeSession.userSelected.length === 0 ? 'disabled' : ''} class="w-full sm:w-auto flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:hover:bg-indigo-600 text-white font-semibold px-6 py-2.5 rounded-xl text-sm transition shadow-lg shadow-indigo-900/30">
+                <button onclick="app.confirmAnswer()" ${this.activeSession.userSelected.length === 0 ? 'disabled' : ''} class="flex-1 sm:flex-initial flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:hover:bg-indigo-600 text-white font-semibold px-6 py-2.5 rounded-xl text-sm transition shadow-lg shadow-indigo-900/30">
                   <span>Confirmar Respuesta</span>
                   <i data-lucide="check" class="w-4 h-4"></i>
                 </button>
               ` : `
-                <button onclick="app.nextQuestion()" class="w-full sm:w-auto flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-6 py-2.5 rounded-xl text-sm transition shadow-lg shadow-emerald-900/30">
-                  <span>Siguiente Pregunta</span>
-                  <i data-lucide="arrow-right" class="w-4 h-4"></i>
-                </button>
+                ${this.activeSession.currentIndex < totalQ - 1 ? `
+                  <button onclick="app.nextQuestion()" class="flex-1 sm:flex-initial flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-6 py-2.5 rounded-xl text-sm transition shadow-lg shadow-indigo-900/30">
+                    <span>Siguiente Pregunta</span>
+                    <i data-lucide="arrow-right" class="w-4 h-4"></i>
+                  </button>
+                ` : `
+                  <button onclick="app.requestFinishSession()" class="flex-1 sm:flex-initial flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-6 py-2.5 rounded-xl text-sm transition shadow-lg shadow-emerald-900/30">
+                    <i data-lucide="check-circle-2" class="w-4 h-4"></i>
+                    <span>Finalizar ${this.activeSession.type === 'recall_24h' ? 'Simulacro' : 'Bloque'}</span>
+                  </button>
+                `}
               `}
+
+              <button onclick="app.requestFinishSession()" class="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition" title="Finalizar Sesión">
+                <i data-lucide="flag" class="w-3.5 h-3.5 text-amber-400"></i>
+                <span class="hidden sm:inline">Finalizar</span>
+              </button>
             </div>
           </div>
 
@@ -1412,6 +1727,8 @@ function doPost(e) {
   renderFailuresView() {
     const container = document.getElementById("view-container");
     const failures = Object.values(store.failures);
+    const resolvedFailures = Object.values(store.resolvedFailures || {});
+    const recallHistory = store.recallHistory || [];
     const doubts = Object.keys(store.doubts);
 
     container.innerHTML = `
@@ -1424,10 +1741,10 @@ function doPost(e) {
               Gestión de Errores & Repaso Espaciado (Curva del Olvido)
             </div>
             <h1 class="text-2xl sm:text-3xl font-bold text-white tracking-tight">
-              Base de Datos de Fallos <span class="text-rose-400 font-mono">(${failures.length} Rojas, ${doubts.length} Amarillas)</span>
+              Base de Datos de Fallos <span class="text-rose-400 font-mono">(${failures.length} Pendientes, ${resolvedFailures.length} Superados)</span>
             </h1>
             <p class="text-slate-400 text-sm mt-1">
-              El registro de fallos permite priorizar los conceptos no consolidados. Repásalos antes de 24 horas para consolidar la retención.
+              El registro de fallos permite priorizar conceptos en Active Recall en frío. Al acertar en el simulacro de errores, el fallo se consolida y se recupera la puntuación neta.
             </p>
           </div>
 
@@ -1439,13 +1756,46 @@ function doPost(e) {
           </div>
         </div>
 
+        <!-- Métricas Rápidas de Consolidación -->
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+          <div class="bg-slate-900/80 p-4 rounded-2xl border border-slate-800 flex items-center gap-3.5">
+            <div class="w-10 h-10 rounded-xl bg-rose-500/20 text-rose-400 flex items-center justify-center">
+              <i data-lucide="alert-circle" class="w-5 h-5"></i>
+            </div>
+            <div>
+              <span class="text-xs text-slate-400 block font-medium">Errores Pendientes</span>
+              <span class="text-2xl font-black text-rose-400 font-mono">${failures.length}</span>
+            </div>
+          </div>
+
+          <div class="bg-slate-900/80 p-4 rounded-2xl border border-slate-800 flex items-center gap-3.5">
+            <div class="w-10 h-10 rounded-xl bg-emerald-500/20 text-emerald-400 flex items-center justify-center">
+              <i data-lucide="check-circle" class="w-5 h-5"></i>
+            </div>
+            <div>
+              <span class="text-xs text-slate-400 block font-medium">Errores Consolidados</span>
+              <span class="text-2xl font-black text-emerald-400 font-mono">${resolvedFailures.length}</span>
+            </div>
+          </div>
+
+          <div class="bg-slate-900/80 p-4 rounded-2xl border border-slate-800 flex items-center gap-3.5">
+            <div class="w-10 h-10 rounded-xl bg-indigo-500/20 text-indigo-400 flex items-center justify-center">
+              <i data-lucide="history" class="w-5 h-5"></i>
+            </div>
+            <div>
+              <span class="text-xs text-slate-400 block font-medium">Simulacros Ejecutados</span>
+              <span class="text-2xl font-black text-indigo-400 font-mono">${recallHistory.length}</span>
+            </div>
+          </div>
+        </div>
+
         <!-- Lista de Preguntas Falladas -->
         ${failures.length === 0 ? `
           <div class="text-center py-16 bg-slate-900/50 border border-slate-800 rounded-2xl">
             <i data-lucide="check-circle-2" class="w-12 h-12 text-emerald-400 mx-auto mb-3"></i>
-            <h3 class="text-lg font-bold text-white">¡Base de Fallos Vacía!</h3>
+            <h3 class="text-lg font-bold text-white">${resolvedFailures.length > 0 ? '¡Todos los Errores Han Sido Consolidados!' : '¡Base de Fallos Vacía!'}</h3>
             <p class="text-sm text-slate-400 max-w-md mx-auto mt-1">
-              No tienes preguntas registradas en la base roja. Sigue entrenando bloques en el simulador.
+              ${resolvedFailures.length > 0 ? `Has superado con éxito ${resolvedFailures.length} conceptos en los simulacros de errores. Sigue entrenando nuevos bloques.` : 'No tienes preguntas registradas en la base roja. Sigue entrenando bloques en el simulador.'}
             </p>
           </div>
         ` : `
