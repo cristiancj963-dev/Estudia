@@ -1734,8 +1734,8 @@ function doPost(e) {
               <span class="key-badge ml-1 hidden md:inline-flex">D</span>
             </button>
 
-            <!-- Botón Ver Repemill del Bloque (Solo en Revisión o Recall) -->
-            ${!isExam ? `
+            <!-- Botón Ver Repemill del Bloque (Solo en Revisión o Pregunta Calificada) -->
+            ${(isReview || isGraded) ? `
               <button onclick="app.openRepemillModal(${q.blockNumber})" class="flex items-center gap-1 text-xs font-semibold py-1.5 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-indigo-400 border border-slate-700 transition" title="Patrones del Bloque">
                 <i data-lucide="book-open" class="w-3.5 h-3.5"></i>
                 <span class="hidden md:inline">Repemill</span>
@@ -1815,7 +1815,7 @@ function doPost(e) {
           <div class="flex items-center justify-between text-xs text-slate-400 pb-3 border-b border-slate-800/80">
             <span class="font-mono font-bold text-indigo-400 uppercase tracking-wider">Identificador: Q#${q.questionNumber}</span>
             <div class="flex items-center gap-2">
-              ${!isExam && q.communityVote ? `<span class="bg-slate-800 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded text-[11px] font-mono">Comunidad: ${q.communityVote}</span>` : ''}
+              ${(isGraded || isReview) && q.communityVote ? `<span class="bg-slate-800 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded text-[11px] font-mono">Comunidad: ${q.communityVote}</span>` : ''}
               <span class="bg-slate-800 text-slate-300 px-2 py-0.5 rounded text-[11px] font-mono">Bloque ${q.blockNumber}</span>
             </div>
           </div>
