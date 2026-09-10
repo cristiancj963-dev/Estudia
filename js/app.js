@@ -544,9 +544,20 @@ function doPost(e) {
     const input = document.getElementById("sync-url-input");
     if (!input) return;
     const url = input.value.trim();
-    if (url && !url.startsWith("http")) {
+    if (!url) {
+      this.showToast("Introduce una URL de sincronización.", "warning");
+      return;
+    }
+    if (!url.startsWith("http")) {
       this.showToast("La URL debe comenzar con https://", "error");
       return;
+    }
+    if (url.includes("docs.google.com/spreadsheets")) {
+      this.showToast("❌ Has pegado el enlace de la hoja (docs.google.com). Debes pegar la URL de la Web App de Apps Script (script.google.com/.../exec). Despliega la guía de abajo.", "error", 9000);
+      return;
+    }
+    if (url.includes("/dev")) {
+      this.showToast("⚠️ La URL termina en /dev. Debe terminar en /exec para permitir sincronización.", "warning", 8000);
     }
     if (store.setGoogleSyncUrl) {
       store.setGoogleSyncUrl(url);
@@ -582,12 +593,17 @@ function doPost(e) {
     }
 
     if (!url) {
-      this.showToast("Debes introducir primero la URL de tu Google Sheet abajo.", "warning");
+      this.showToast("Debes introducir primero la URL de tu Google Apps Script abajo.", "warning");
       if (input) {
         input.focus();
         input.classList.add("ring-2", "ring-amber-400");
         setTimeout(() => input.classList.remove("ring-2", "ring-amber-400"), 2500);
       }
+      return;
+    }
+
+    if (url.includes("docs.google.com/spreadsheets")) {
+      this.showToast("❌ Has pegado la URL de la hoja (docs.google.com). Necesitas la URL de la Web App (script.google.com/.../exec).", "error", 9000);
       return;
     }
 
@@ -607,7 +623,8 @@ function doPost(e) {
         headers: {
           "Content-Type": "text/plain;charset=utf-8"
         },
-        body: payload
+        body: payload,
+        redirect: "follow"
       });
 
       const res = await resp.json();
@@ -623,7 +640,11 @@ function doPost(e) {
       }
     } catch (err) {
       console.error("Error subiendo a Google Sheets:", err);
-      this.showToast("Error al sincronizar: " + (err.message || "Fallo de conexión CORS"), "error");
+      let errorMsg = "Error al sincronizar: " + (err.message || "Fallo de conexión");
+      if (err.message && (err.message.toLowerCase().includes("fetch") || err.message.toLowerCase().includes("network"))) {
+        errorMsg = "Error 'Failed to fetch': Comprueba que en Apps Script 'Quién tiene acceso' sea 'Cualquier usuario' (Anyone) y no 'Solo yo'.";
+      }
+      this.showToast(errorMsg, "error", 10000);
     } finally {
       if (btn) {
         btn.disabled = false;
@@ -643,12 +664,17 @@ function doPost(e) {
     }
 
     if (!url) {
-      this.showToast("Debes introducir primero la URL de tu Google Sheet abajo.", "warning");
+      this.showToast("Debes introducir primero la URL de tu Google Apps Script abajo.", "warning");
       if (input) {
         input.focus();
         input.classList.add("ring-2", "ring-amber-400");
         setTimeout(() => input.classList.remove("ring-2", "ring-amber-400"), 2500);
       }
+      return;
+    }
+
+    if (url.includes("docs.google.com/spreadsheets")) {
+      this.showToast("❌ Has pegado la URL de la hoja (docs.google.com). Necesitas la URL de la Web App (script.google.com/.../exec).", "error", 9000);
       return;
     }
 
@@ -662,7 +688,10 @@ function doPost(e) {
 
     try {
       const cacheBuster = (url.includes("?") ? "&" : "?") + "t=" + Date.now();
-      const resp = await fetch(url + cacheBuster);
+      const resp = await fetch(url + cacheBuster, {
+        method: "GET",
+        redirect: "follow"
+      });
       const data = await resp.json();
 
       if (data.empty) {
@@ -678,19 +707,21 @@ function doPost(e) {
         this.updateSyncModalStatus();
         this.showToast("¡Progreso y estadísticas recuperados desde Google Sheets!", "success");
         this.render();
-        if (typeof confetti === "function") confetti({ particleCount: 40, spread: 60 });
       } else {
-        throw new Error(importResult.error || "Formato de datos no válido");
+        throw new Error(importResult.error || "Formato de datos no compatible");
       }
     } catch (err) {
       console.error("Error descargando de Google Sheets:", err);
-      this.showToast("Error al descargar de Google Sheets: " + err.message, "error");
+      let errorMsg = "Error al descargar: " + (err.message || "Fallo de conexión");
+      if (err.message && (err.message.toLowerCase().includes("fetch") || err.message.toLowerCase().includes("network"))) {
+        errorMsg = "Error 'Failed to fetch': Comprueba que la URL termine en /exec y que 'Quién tiene acceso' sea 'Cualquier usuario' (Anyone).";
+      }
+      this.showToast(errorMsg, "error", 10000);
     } finally {
       if (btn) {
         btn.disabled = false;
         btn.innerHTML = originalHTML;
         if (window.lucide) window.lucide.createIcons();
-      }
     }
   }
 
