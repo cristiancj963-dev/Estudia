@@ -722,6 +722,7 @@ function doPost(e) {
         btn.disabled = false;
         btn.innerHTML = originalHTML;
         if (window.lucide) window.lucide.createIcons();
+      }
     }
   }
 
