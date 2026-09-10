@@ -386,6 +386,262 @@ class App {
   }
 
   // =========================================================================
+  // SINCRONIZACIÓN EN LA NUBE (GOOGLE DRIVE / SHEETS 2-WAY SYNC)
+  // =========================================================================
+
+  getAppsScriptTemplate() {
+    return `/**
+ * BACKEND GOOGLE APPS SCRIPT - ESTUDIA AWS SAP-C02
+ * Sincronización Manual y Automática con Google Sheets / Drive
+ */
+
+function doGet(e) {
+  var ss = SpreadsheetApp.getActiveSpreadsheet();
+  var backupSheet = ss.getSheetByName("Backup_State") || ss.insertSheet("Backup_State");
+  var lastRow = backupSheet.getLastRow();
+  
+  if (lastRow === 0) {
+    return ContentService.createTextOutput(JSON.stringify({ empty: true, message: "Sin datos guardados aún" }))
+      .setMimeType(ContentService.MimeType.JSON);
+  }
+  
+  var values = backupSheet.getRange(1, 1, lastRow, 1).getValues();
+  var jsonStr = values.map(function(r) { return r[0]; }).join("");
+  
+  return ContentService.createTextOutput(jsonStr)
+    .setMimeType(ContentService.MimeType.JSON);
+}
+
+function doPost(e) {
+  try {
+    var ss = SpreadsheetApp.getActiveSpreadsheet();
+    var backupSheet = ss.getSheetByName("Backup_State") || ss.insertSheet("Backup_State");
+    var payload = e.postData.contents;
+    
+    // 1. Guardar el estado JSON en trozos seguros (evita límite de celda de 50.000 caracteres)
+    backupSheet.clear();
+    var chunkSize = 30000;
+    var numChunks = Math.ceil(payload.length / chunkSize);
+    var chunks = [];
+    for (var i = 0; i < numChunks; i++) {
+      chunks.push([payload.substr(i * chunkSize, chunkSize)]);
+    }
+    backupSheet.getRange(1, 1, chunks.length, 1).setValues(chunks);
+    
+    // 2. Generar Hoja Visual de Resumen
+    var data = JSON.parse(payload);
+    var summarySheet = ss.getSheetByName("Resumen_Estudio") || ss.insertSheet("Resumen_Estudio");
+    summarySheet.clear();
+    
+    summarySheet.appendRow(["ESTUDIA AWS SAP-C02", "ESTADÍSTICAS Y SINCRONIZACIÓN"]);
+    summarySheet.appendRow(["Última Sincronización", new Date().toLocaleString("es-ES")]);
+    summarySheet.appendRow(["Total Preguntas Respondidas", Object.keys(data.answers || {}).length]);
+    
+    if (data.stats) {
+      summarySheet.appendRow(["Puntuación Neta Global", data.stats.netScore || 0]);
+      summarySheet.appendRow(["Precisión (%)", (data.stats.accuracy || 0) + "%"]);
+      summarySheet.appendRow(["Aciertos Totales", data.stats.totalCorrect || 0]);
+      summarySheet.appendRow(["Fallos Registrados", data.stats.totalFailed || 0]);
+      summarySheet.appendRow(["Preguntas en Duda", data.stats.totalDoubtful || 0]);
+      summarySheet.appendRow(["Sesiones Foco Pomodoro", (data.pomodoroStats && data.pomodoroStats.completedSessions) || 0]);
+    }
+    
+    summarySheet.getRange("A1:B1").setFontWeight("bold").setBackground("#4f46e5").setFontColor("#ffffff");
+    summarySheet.setColumnWidth(1, 260);
+    summarySheet.setColumnWidth(2, 220);
+    
+    return ContentService.createTextOutput(JSON.stringify({ 
+      status: "success", 
+      message: "Progreso sincronizado en Google Sheets con éxito",
+      timestamp: new Date().toISOString() 
+    })).setMimeType(ContentService.MimeType.JSON);
+    
+  } catch (err) {
+    return ContentService.createTextOutput(JSON.stringify({ 
+      status: "error", 
+      error: err.toString() 
+    })).setMimeType(ContentService.MimeType.JSON);
+  }
+}`;
+  }
+
+  openSyncModal() {
+    const modal = document.getElementById("sync-modal");
+    if (!modal) return;
+    
+    const input = document.getElementById("sync-url-input");
+    if (input) {
+      input.value = store.getGoogleSyncUrl();
+    }
+    
+    const snippetEl = document.getElementById("apps-script-code-snippet");
+    if (snippetEl) {
+      snippetEl.textContent = this.getAppsScriptTemplate();
+    }
+    
+    this.updateSyncModalStatus();
+    modal.classList.remove("hidden");
+    modal.classList.add("flex");
+    if (window.lucide) window.lucide.createIcons();
+  }
+
+  closeSyncModal() {
+    const modal = document.getElementById("sync-modal");
+    if (!modal) return;
+    modal.classList.add("hidden");
+    modal.classList.remove("flex");
+  }
+
+  updateSyncModalStatus() {
+    const url = store.getGoogleSyncUrl();
+    const lastSync = store.getLastCloudSync();
+    const dot = document.getElementById("sync-status-dot");
+    const label = document.getElementById("sync-status-label");
+    const dateEl = document.getElementById("sync-last-date");
+
+    if (!dot || !label || !dateEl) return;
+
+    if (url && url.startsWith("http")) {
+      dot.className = "w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse";
+      label.textContent = "Google Sheet Vinculado";
+      label.className = "font-bold text-emerald-300";
+    } else {
+      dot.className = "w-2.5 h-2.5 rounded-full bg-amber-400";
+      label.textContent = "Google Sheet no configurado";
+      label.className = "font-bold text-slate-200";
+    }
+
+    if (lastSync) {
+      const d = new Date(lastSync);
+      dateEl.textContent = "Última sincronización: " + d.toLocaleDateString("es-ES") + " a las " + d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+    } else {
+      dateEl.textContent = "Última sincronización: Nunca";
+    }
+  }
+
+  saveGoogleSyncUrl() {
+    const input = document.getElementById("sync-url-input");
+    if (!input) return;
+    const url = input.value.trim();
+    if (url && !url.startsWith("http")) {
+      this.showToast("La URL debe comenzar con https://", "error");
+      return;
+    }
+    store.setGoogleSyncUrl(url);
+    this.updateSyncModalStatus();
+    this.showToast("URL de sincronización guardada correctamente.", "success");
+  }
+
+  copyAppsScriptCode() {
+    const code = this.getAppsScriptTemplate();
+    if (navigator.clipboard && navigator.clipboard.writeText) {
+      navigator.clipboard.writeText(code).then(() => {
+        this.showToast("Código Apps Script copiado al portapapeles.", "success");
+      }).catch(() => {
+        this.showToast("Selecciona y copia el código manualmente.", "warning");
+      });
+    } else {
+      this.showToast("Copia el código directamente desde el recuadro.", "info");
+    }
+  }
+
+  async syncUploadToGoogleSheet() {
+    const url = store.getGoogleSyncUrl();
+    if (!url) {
+      this.showToast("Debes configurar primero la URL de tu Google Sheet abajo.", "warning");
+      document.getElementById("sync-url-input")?.focus();
+      return;
+    }
+
+    const btn = document.getElementById("btn-sync-upload");
+    const originalHTML = btn ? btn.innerHTML : "";
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i><span>Subiendo a Google Sheets...</span>`;
+      if (window.lucide) window.lucide.createIcons();
+    }
+
+    try {
+      const payload = store.exportStateJSON();
+      // Google Apps Script requiere text/plain para evitar preflight CORS
+      const resp = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "text/plain;charset=utf-8"
+        },
+        body: payload
+      });
+
+      const res = await resp.json();
+      if (res.status === "success" || res.status === "ok") {
+        store.setLastCloudSync(new Date().toISOString());
+        this.updateSyncModalStatus();
+        this.showToast("¡Progreso guardado en tu Google Sheet con éxito!", "success");
+        if (typeof confetti === "function") confetti({ particleCount: 30, spread: 50, origin: { y: 0.8 } });
+      } else {
+        throw new Error(res.error || "Respuesta desconocida de Apps Script");
+      }
+    } catch (err) {
+      console.error("Error subiendo a Google Sheets:", err);
+      this.showToast("Error al sincronizar: " + (err.message || "Fallo de conexión CORS"), "error");
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = originalHTML;
+        if (window.lucide) window.lucide.createIcons();
+      }
+    }
+  }
+
+  async syncDownloadFromGoogleSheet() {
+    const url = store.getGoogleSyncUrl();
+    if (!url) {
+      this.showToast("Debes configurar primero la URL de tu Google Sheet abajo.", "warning");
+      document.getElementById("sync-url-input")?.focus();
+      return;
+    }
+
+    const btn = document.getElementById("btn-sync-download");
+    const originalHTML = btn ? btn.innerHTML : "";
+    if (btn) {
+      btn.disabled = true;
+      btn.innerHTML = `<i data-lucide="loader-2" class="w-4 h-4 animate-spin"></i><span>Descargando de Drive...</span>`;
+      if (window.lucide) window.lucide.createIcons();
+    }
+
+    try {
+      const cacheBuster = (url.includes("?") ? "&" : "?") + "t=" + Date.now();
+      const resp = await fetch(url + cacheBuster);
+      const data = await resp.json();
+
+      if (data.empty) {
+        this.showToast("La hoja de Google Sheets está vacía. Sube tu progreso primero.", "info");
+        return;
+      }
+
+      const importResult = store.importStateJSON(data);
+      if (importResult.success) {
+        store.setLastCloudSync(new Date().toISOString());
+        this.updateSyncModalStatus();
+        this.showToast("¡Progreso y estadísticas recuperados desde Google Sheets!", "success");
+        this.render();
+        if (typeof confetti === "function") confetti({ particleCount: 40, spread: 60 });
+      } else {
+        throw new Error(importResult.error || "Formato de datos no válido");
+      }
+    } catch (err) {
+      console.error("Error descargando de Google Sheets:", err);
+      this.showToast("Error al descargar de Google Sheets: " + err.message, "error");
+    } finally {
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = originalHTML;
+        if (window.lucide) window.lucide.createIcons();
+      }
+    }
+  }
+
+  // =========================================================================
   // RENDERIZADO GENERAL & VISTAS
   // =========================================================================
 
@@ -468,6 +724,11 @@ class App {
           </div>
 
           <div class="flex flex-wrap items-center gap-3">
+            <button onclick="app.openSyncModal()" class="flex items-center gap-2 bg-indigo-950/70 hover:bg-indigo-900/80 text-indigo-300 border border-indigo-500/40 px-3.5 py-2 rounded-xl text-sm font-semibold transition shadow-sm">
+              <i data-lucide="cloud" class="w-4 h-4 text-indigo-400"></i>
+              <span>Drive Sync</span>
+            </button>
+
             <button onclick="app.openIngestModal()" class="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 px-3.5 py-2 rounded-xl text-sm font-semibold border border-slate-700 transition shadow-sm">
               <i data-lucide="upload-cloud" class="w-4 h-4 text-cyan-400"></i>
               <span>Cargar PDF / JSON</span>
