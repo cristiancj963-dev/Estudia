@@ -466,23 +466,39 @@ function doPost(e) {
   }
 
   openSyncModal() {
-    const modal = document.getElementById("sync-modal");
-    if (!modal) return;
-    
-    const input = document.getElementById("sync-url-input");
-    if (input) {
-      input.value = store.getGoogleSyncUrl();
+    try {
+      const modal = document.getElementById("sync-modal");
+      if (!modal) {
+        console.error("No se encontró el elemento sync-modal");
+        return;
+      }
+      
+      const input = document.getElementById("sync-url-input");
+      if (input) {
+        const currentUrl = (store.getGoogleSyncUrl ? store.getGoogleSyncUrl() : (store.settings && store.settings.googleSyncUrl)) || "";
+        input.value = currentUrl;
+      }
+      
+      const snippetEl = document.getElementById("apps-script-code-snippet");
+      if (snippetEl) {
+        snippetEl.textContent = this.getAppsScriptTemplate();
+      }
+      
+      this.updateSyncModalStatus();
+      modal.classList.remove("hidden");
+      modal.classList.add("flex");
+      modal.style.display = "flex";
+      
+      if (window.lucide) window.lucide.createIcons();
+    } catch (err) {
+      console.error("Error abriendo modal de sincronización:", err);
+      const modal = document.getElementById("sync-modal");
+      if (modal) {
+        modal.classList.remove("hidden");
+        modal.classList.add("flex");
+        modal.style.display = "flex";
+      }
     }
-    
-    const snippetEl = document.getElementById("apps-script-code-snippet");
-    if (snippetEl) {
-      snippetEl.textContent = this.getAppsScriptTemplate();
-    }
-    
-    this.updateSyncModalStatus();
-    modal.classList.remove("hidden");
-    modal.classList.add("flex");
-    if (window.lucide) window.lucide.createIcons();
   }
 
   closeSyncModal() {
@@ -490,32 +506,37 @@ function doPost(e) {
     if (!modal) return;
     modal.classList.add("hidden");
     modal.classList.remove("flex");
+    modal.style.display = "none";
   }
 
   updateSyncModalStatus() {
-    const url = store.getGoogleSyncUrl();
-    const lastSync = store.getLastCloudSync();
-    const dot = document.getElementById("sync-status-dot");
-    const label = document.getElementById("sync-status-label");
-    const dateEl = document.getElementById("sync-last-date");
+    try {
+      const url = (store.getGoogleSyncUrl ? store.getGoogleSyncUrl() : (store.settings && store.settings.googleSyncUrl)) || "";
+      const lastSync = (store.getLastCloudSync ? store.getLastCloudSync() : (store.settings && store.settings.lastCloudSync)) || null;
+      const dot = document.getElementById("sync-status-dot");
+      const label = document.getElementById("sync-status-label");
+      const dateEl = document.getElementById("sync-last-date");
 
-    if (!dot || !label || !dateEl) return;
+      if (!dot || !label || !dateEl) return;
 
-    if (url && url.startsWith("http")) {
-      dot.className = "w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse";
-      label.textContent = "Google Sheet Vinculado";
-      label.className = "font-bold text-emerald-300";
-    } else {
-      dot.className = "w-2.5 h-2.5 rounded-full bg-amber-400";
-      label.textContent = "Google Sheet no configurado";
-      label.className = "font-bold text-slate-200";
-    }
+      if (url && url.startsWith("http")) {
+        dot.className = "w-2.5 h-2.5 rounded-full bg-emerald-400 animate-pulse";
+        label.textContent = "Google Sheet Vinculado";
+        label.className = "font-bold text-emerald-300";
+      } else {
+        dot.className = "w-2.5 h-2.5 rounded-full bg-amber-400";
+        label.textContent = "Google Sheet no configurado";
+        label.className = "font-bold text-slate-200";
+      }
 
-    if (lastSync) {
-      const d = new Date(lastSync);
-      dateEl.textContent = "Última sincronización: " + d.toLocaleDateString("es-ES") + " a las " + d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
-    } else {
-      dateEl.textContent = "Última sincronización: Nunca";
+      if (lastSync) {
+        const d = new Date(lastSync);
+        dateEl.textContent = "Última sincronización: " + d.toLocaleDateString("es-ES") + " a las " + d.toLocaleTimeString("es-ES", { hour: "2-digit", minute: "2-digit" });
+      } else {
+        dateEl.textContent = "Última sincronización: Nunca";
+      }
+    } catch (err) {
+      console.warn("Error en updateSyncModalStatus:", err);
     }
   }
 
@@ -527,7 +548,13 @@ function doPost(e) {
       this.showToast("La URL debe comenzar con https://", "error");
       return;
     }
-    store.setGoogleSyncUrl(url);
+    if (store.setGoogleSyncUrl) {
+      store.setGoogleSyncUrl(url);
+    } else {
+      if (!store.settings) store.settings = {};
+      store.settings.googleSyncUrl = url;
+      store.saveToStorage();
+    }
     this.updateSyncModalStatus();
     this.showToast("URL de sincronización guardada correctamente.", "success");
   }
@@ -546,10 +573,21 @@ function doPost(e) {
   }
 
   async syncUploadToGoogleSheet() {
-    const url = store.getGoogleSyncUrl();
+    let url = (store.getGoogleSyncUrl ? store.getGoogleSyncUrl() : (store.settings && store.settings.googleSyncUrl)) || "";
+    const input = document.getElementById("sync-url-input");
+    if (!url && input && input.value.trim()) {
+      url = input.value.trim();
+      if (store.setGoogleSyncUrl) store.setGoogleSyncUrl(url);
+      this.updateSyncModalStatus();
+    }
+
     if (!url) {
-      this.showToast("Debes configurar primero la URL de tu Google Sheet abajo.", "warning");
-      document.getElementById("sync-url-input")?.focus();
+      this.showToast("Debes introducir primero la URL de tu Google Sheet abajo.", "warning");
+      if (input) {
+        input.focus();
+        input.classList.add("ring-2", "ring-amber-400");
+        setTimeout(() => input.classList.remove("ring-2", "ring-amber-400"), 2500);
+      }
       return;
     }
 
@@ -574,12 +612,14 @@ function doPost(e) {
 
       const res = await resp.json();
       if (res.status === "success" || res.status === "ok") {
-        store.setLastCloudSync(new Date().toISOString());
+        if (store.setLastCloudSync) {
+          store.setLastCloudSync(new Date().toISOString());
+        }
         this.updateSyncModalStatus();
         this.showToast("¡Progreso guardado en tu Google Sheet con éxito!", "success");
         if (typeof confetti === "function") confetti({ particleCount: 30, spread: 50, origin: { y: 0.8 } });
       } else {
-        throw new Error(res.error || "Respuesta desconocida de Apps Script");
+        throw new Error(res.error || "Respuesta no esperada del script");
       }
     } catch (err) {
       console.error("Error subiendo a Google Sheets:", err);
@@ -594,10 +634,21 @@ function doPost(e) {
   }
 
   async syncDownloadFromGoogleSheet() {
-    const url = store.getGoogleSyncUrl();
+    let url = (store.getGoogleSyncUrl ? store.getGoogleSyncUrl() : (store.settings && store.settings.googleSyncUrl)) || "";
+    const input = document.getElementById("sync-url-input");
+    if (!url && input && input.value.trim()) {
+      url = input.value.trim();
+      if (store.setGoogleSyncUrl) store.setGoogleSyncUrl(url);
+      this.updateSyncModalStatus();
+    }
+
     if (!url) {
-      this.showToast("Debes configurar primero la URL de tu Google Sheet abajo.", "warning");
-      document.getElementById("sync-url-input")?.focus();
+      this.showToast("Debes introducir primero la URL de tu Google Sheet abajo.", "warning");
+      if (input) {
+        input.focus();
+        input.classList.add("ring-2", "ring-amber-400");
+        setTimeout(() => input.classList.remove("ring-2", "ring-amber-400"), 2500);
+      }
       return;
     }
 
@@ -615,13 +666,15 @@ function doPost(e) {
       const data = await resp.json();
 
       if (data.empty) {
-        this.showToast("La hoja de Google Sheets está vacía. Sube tu progreso primero.", "info");
+        this.showToast("La hoja de Google Sheets está vacía aún. Sube tu progreso primero.", "info");
         return;
       }
 
       const importResult = store.importStateJSON(data);
       if (importResult.success) {
-        store.setLastCloudSync(new Date().toISOString());
+        if (store.setLastCloudSync) {
+          store.setLastCloudSync(new Date().toISOString());
+        }
         this.updateSyncModalStatus();
         this.showToast("¡Progreso y estadísticas recuperados desde Google Sheets!", "success");
         this.render();
