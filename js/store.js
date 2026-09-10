@@ -12,20 +12,27 @@ const STORAGE_KEYS = {
   RECALL_HISTORY: "estudia_aws_recall_history_v1",
   DOUBTS: "estudia_aws_doubts_v1",
   MNEMONICS: "estudia_aws_mnemonics_v1",
-  POMODORO: "estudia_aws_pomodoro_v1",
-  SETTINGS: "estudia_aws_settings_v1"
+  FOCUS_TIMER: "estudia_aws_focus_timer_v1",
+  SETTINGS: "estudia_aws_settings_v1",
+  COMPLETED_BLOCKS: "estudia_aws_completed_blocks_v1",
+  PENDING_EXAMS: "estudia_aws_pending_exams_v1",
+  CUSTOM_CORRECT: "estudia_aws_custom_correct_v1"
 };
 
 class ExamStore {
   constructor() {
     this.questions = [];
-    this.answers = {};          // { [qId]: { selected: ['A'], isCorrect: true/false, timestamp, attempts: 1 } }
-    this.failures = {};         // { [qId]: { qId, blockNumber, concept, failureCount, timestamp } }
-    this.resolvedFailures = {}; // { [qId]: { qId, blockNumber, concept, failureCount, resolvedAt, resolvedWith } }
-    this.recallHistory = [];    // [ { id, date, totalQuestions, resolvedCount, failedCount, ... } ]
-    this.doubts = {};           // { [qId]: true }
-    this.mnemonics = {};        // { [qId]: { text, lockerNumber, updatedAt } }
-    this.pomodoroStats = { completedSessions: 0, totalFocusMinutes: 0 };
+    this.answers = {};              // { [qId]: { selected: ['A'], isCorrect: true/false, timestamp, attempts: 1 } }
+    this.failures = {};             // { [qId]: { qId, blockNumber, concept, failureCount, timestamp } }
+    this.resolvedFailures = {};     // { [qId]: { qId, blockNumber, concept, failureCount, resolvedAt, resolvedWith } }
+    this.recallHistory = [];        // [ { id, date, totalQuestions, resolvedCount, failedCount, ... } ]
+    this.doubts = {};               // { [qId]: true }
+    this.mnemonics = {};            // { [qId]: { text, lockerNumber, updatedAt } }
+    this.completedBlocks = {};      // { [blockNumber]: { completedAt, netScore, accuracy, correctCount, failedCount } }
+    this.pendingExams = {};         // { [blockNumber]: { sessionAnswers: { [qId]: { selected: ['A'] } }, currentIndex, updatedAt } }
+    this.customCorrectAnswers = {}; // { [qId]: "A" | "AC" } Respuestas correctas personalizadas por el usuario
+    this.focusStats = { completedSessions: 0, totalFocusMinutes: 0 };
+    this.pomodoroStats = this.focusStats;
     this.settings = {
       darkMode: true,
       soundEnabled: true,
@@ -73,8 +80,20 @@ class ExamStore {
       const mRaw = localStorage.getItem(STORAGE_KEYS.MNEMONICS);
       if (mRaw) this.mnemonics = JSON.parse(mRaw);
 
-      const pRaw = localStorage.getItem(STORAGE_KEYS.POMODORO);
-      if (pRaw) this.pomodoroStats = JSON.parse(pRaw);
+      const pRaw = localStorage.getItem(STORAGE_KEYS.FOCUS_TIMER) || localStorage.getItem("estudia_aws_pomodoro_v1");
+      if (pRaw) {
+        this.focusStats = JSON.parse(pRaw);
+        this.pomodoroStats = this.focusStats;
+      }
+
+      const ccRaw = localStorage.getItem(STORAGE_KEYS.CUSTOM_CORRECT);
+      if (ccRaw) this.customCorrectAnswers = JSON.parse(ccRaw);
+
+      const cbRaw = localStorage.getItem(STORAGE_KEYS.COMPLETED_BLOCKS);
+      if (cbRaw) this.completedBlocks = JSON.parse(cbRaw);
+
+      const peRaw = localStorage.getItem(STORAGE_KEYS.PENDING_EXAMS);
+      if (peRaw) this.pendingExams = JSON.parse(peRaw);
 
       const sRaw = localStorage.getItem(STORAGE_KEYS.SETTINGS);
       if (sRaw) this.settings = { ...this.settings, ...JSON.parse(sRaw) };
@@ -92,7 +111,10 @@ class ExamStore {
       localStorage.setItem(STORAGE_KEYS.RECALL_HISTORY, JSON.stringify(this.recallHistory));
       localStorage.setItem(STORAGE_KEYS.DOUBTS, JSON.stringify(this.doubts));
       localStorage.setItem(STORAGE_KEYS.MNEMONICS, JSON.stringify(this.mnemonics));
-      localStorage.setItem(STORAGE_KEYS.POMODORO, JSON.stringify(this.pomodoroStats));
+      localStorage.setItem(STORAGE_KEYS.FOCUS_TIMER, JSON.stringify(this.focusStats));
+      localStorage.setItem(STORAGE_KEYS.CUSTOM_CORRECT, JSON.stringify(this.customCorrectAnswers));
+      localStorage.setItem(STORAGE_KEYS.COMPLETED_BLOCKS, JSON.stringify(this.completedBlocks));
+      localStorage.setItem(STORAGE_KEYS.PENDING_EXAMS, JSON.stringify(this.pendingExams));
       localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(this.settings));
     } catch (e) {
       console.warn("Error guardando en localStorage:", e);
@@ -263,6 +285,76 @@ class ExamStore {
   }
 
   /**
+   * Determina si un bloque de preguntas ha sido completado y evaluado
+   */
+  isBlockCompleted(blockNumber) {
+    const bNum = Number(blockNumber);
+    if (this.completedBlocks && this.completedBlocks[bNum]) return true;
+
+    // Migración retroactiva: si todas las preguntas del bloque ya fueron respondidas en store.answers
+    const startIdx = (bNum - 1) * 25;
+    const endIdx = Math.min(bNum * 25, this.questions.length);
+    const bQuestions = this.questions.slice(startIdx, endIdx);
+    if (bQuestions.length > 0 && bQuestions.every(q => !!this.answers[String(q.id)])) {
+      if (!this.completedBlocks) this.completedBlocks = {};
+      this.completedBlocks[bNum] = {
+        completedAt: new Date().toISOString(),
+        autoMigrated: true
+      };
+      this.saveToStorage();
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * Registra oficialmente la finalización de un bloque de examen
+   */
+  markBlockCompleted(blockNumber, summary = {}) {
+    const bNum = Number(blockNumber);
+    if (!this.completedBlocks) this.completedBlocks = {};
+    this.completedBlocks[bNum] = {
+      completedAt: new Date().toISOString(),
+      ...summary
+    };
+    this.clearPendingExam(bNum);
+    this.saveToStorage();
+  }
+
+  /**
+   * Guarda el borrador temporal no evaluado de un examen en curso
+   */
+  savePendingExam(blockNumber, sessionAnswers, currentIndex = 0) {
+    const bNum = Number(blockNumber);
+    if (!this.pendingExams) this.pendingExams = {};
+    this.pendingExams[bNum] = {
+      sessionAnswers: sessionAnswers || {},
+      currentIndex: currentIndex || 0,
+      updatedAt: new Date().toISOString()
+    };
+    this.saveToStorage();
+  }
+
+  /**
+   * Obtiene el borrador de un examen pendiente si existe
+   */
+  getPendingExam(blockNumber) {
+    const bNum = Number(blockNumber);
+    return (this.pendingExams && this.pendingExams[bNum]) || null;
+  }
+
+  /**
+   * Elimina el borrador de un examen pendiente
+   */
+  clearPendingExam(blockNumber) {
+    const bNum = Number(blockNumber);
+    if (this.pendingExams && this.pendingExams[bNum]) {
+      delete this.pendingExams[bNum];
+      this.saveToStorage();
+    }
+  }
+
+  /**
    * Divide las preguntas en bloques cerrados de 25 preguntas
    */
   getBlocksSummary() {
@@ -276,31 +368,45 @@ class ExamStore {
       const blockQuestions = this.questions.slice(startIdx, endIdx);
       const totalInBlock = blockQuestions.length;
 
+      const isCompleted = this.isBlockCompleted(b);
+      const pending = this.getPendingExam(b);
+
       let answered = 0;
       let correct = 0;
       let failed = 0;
       let doubtful = 0;
 
-      blockQuestions.forEach(q => {
-        const qId = String(q.id);
-        if (this.answers[qId]) {
-          answered++;
-          if (this.answers[qId].isCorrect) correct++;
-          else failed++;
-        }
-        if (this.doubts[qId]) doubtful++;
-      });
+      if (isCompleted) {
+        blockQuestions.forEach(q => {
+          const qId = String(q.id);
+          if (this.answers[qId]) {
+            answered++;
+            if (this.answers[qId].isCorrect) correct++;
+            else failed++;
+          }
+          if (this.doubts[qId]) doubtful++;
+        });
+      } else if (pending && pending.sessionAnswers) {
+        answered = Object.keys(pending.sessionAnswers).length;
+        blockQuestions.forEach(q => {
+          if (this.doubts[String(q.id)]) doubtful++;
+        });
+      } else {
+        blockQuestions.forEach(q => {
+          if (this.doubts[String(q.id)]) doubtful++;
+        });
+      }
 
       let status = "pending";
-      if (answered === totalInBlock && totalInBlock > 0) {
+      if (isCompleted) {
         status = "completed";
-      } else if (answered > 0) {
+      } else if (answered > 0 || (pending && Object.keys(pending.sessionAnswers || {}).length > 0)) {
         status = "in_progress";
       }
 
-      const accuracy = answered > 0 ? Math.round((correct / answered) * 100) : 0;
+      const accuracy = (isCompleted && answered > 0) ? Math.round((correct / answered) * 100) : 0;
       // Puntuación Neta para el bloque: Aciertos - (Fallos / 3)
-      const netScore = Math.max(0, +(correct - (failed / 3)).toFixed(1));
+      const netScore = isCompleted ? Math.max(0, +(correct - (failed / 3)).toFixed(1)) : 0;
 
       blocks.push({
         blockNumber: b,
@@ -312,7 +418,8 @@ class ExamStore {
         doubtful,
         accuracy,
         netScore,
-        status
+        status,
+        isCompleted
       });
     }
 
@@ -376,8 +483,9 @@ class ExamStore {
    * Limpia el progreso de un bloque específico para repetirlo desde cero
    */
   resetBlock(blockNumber) {
-    const startIdx = (blockNumber - 1) * 25;
-    const endIdx = Math.min(blockNumber * 25, this.questions.length);
+    const bNum = Number(blockNumber);
+    const startIdx = (bNum - 1) * 25;
+    const endIdx = Math.min(bNum * 25, this.questions.length);
     const blockQuestions = this.questions.slice(startIdx, endIdx);
 
     blockQuestions.forEach(q => {
@@ -385,71 +493,215 @@ class ExamStore {
       delete this.answers[qId];
       delete this.doubts[qId];
       delete this.failures[qId];
+      if (this.resolvedFailures) delete this.resolvedFailures[qId];
     });
+
+    if (this.completedBlocks && this.completedBlocks[bNum]) {
+      delete this.completedBlocks[bNum];
+    }
+    this.clearPendingExam(bNum);
 
     this.saveToStorage();
   }
 
   /**
-   * Fuerza el acierto de una pregunta (alineación con consenso de la comunidad)
+   * Extrae la respuesta del consenso de la comunidad a partir de communityVote (ej: "A (100%)" -> "A", "AC (79%)" -> "AC")
+   */
+  getCommunityVoteAnswer(question) {
+    if (!question || !question.communityVote) return null;
+    const match = String(question.communityVote).trim().match(/^([A-F]+)/i);
+    return match ? match[1].toUpperCase().split("").sort().join("") : null;
+  }
+
+  /**
+   * Devuelve la clave oficial de examen del dataset
+   */
+  getOfficialAnswer(question) {
+    if (!question || !question.correctAnswer) return "";
+    return String(question.correctAnswer).toUpperCase().trim().split("").sort().join("");
+  }
+
+  /**
+   * Indica si una pregunta tiene una respuesta correcta forzada/personalizada por el usuario
+   */
+  hasCustomCorrectAnswer(questionId) {
+    return !!(this.customCorrectAnswers && this.customCorrectAnswers[String(questionId)]);
+  }
+
+  getCustomCorrectAnswer(questionId) {
+    return (this.customCorrectAnswers && this.customCorrectAnswers[String(questionId)]) || null;
+  }
+
+  /**
+   * Obtiene la respuesta correcta efectiva para una pregunta según la regla de prioridad:
+   * 1. Respuesta personalizada por el usuario (si existe forzado manual).
+   * 2. Consenso de la comunidad (por defecto, a partir de communityVote).
+   * 3. Clave oficial de examen (fallback si no hay voto de comunidad).
+   */
+  getEffectiveCorrectAnswer(question) {
+    if (!question) return "";
+    const qId = String(question.id);
+
+    // 1. Personalizada por el usuario
+    if (this.customCorrectAnswers && this.customCorrectAnswers[qId]) {
+      return this.customCorrectAnswers[qId];
+    }
+
+    // 2. Consenso de la comunidad por defecto
+    const communityAns = this.getCommunityVoteAnswer(question);
+    if (communityAns) {
+      return communityAns;
+    }
+
+    // 3. Fallback a clave oficial
+    return this.getOfficialAnswer(question);
+  }
+
+  /**
+   * Establece una opción o combinación de opciones elegida por el usuario como la respuesta correcta válida
+   */
+  setCustomCorrectAnswer(questionId, letters, customReason = "Personalizado por el usuario") {
+    const qId = String(questionId);
+    const sortedLetters = (Array.isArray(letters) ? letters.join("") : String(letters || ""))
+      .toUpperCase()
+      .trim()
+      .split("")
+      .sort()
+      .join("");
+
+    if (!sortedLetters) return;
+
+    if (!this.customCorrectAnswers) this.customCorrectAnswers = {};
+    this.customCorrectAnswers[qId] = sortedLetters;
+
+    const question = this.questions.find(q => String(q.id) === qId);
+    const blockNum = question ? question.blockNumber : 1;
+    const existing = this.answers[qId];
+
+    if (existing && existing.selected) {
+      const userSorted = [...existing.selected].sort().join("");
+      const isNowCorrect = userSorted === sortedLetters;
+
+      existing.isCorrect = isNowCorrect;
+      existing.forcedCorrect = true;
+      existing.customOverridden = true;
+      existing.forcedReason = customReason;
+
+      if (isNowCorrect) {
+        const prevFail = this.failures[qId];
+        if (prevFail) {
+          if (!this.resolvedFailures) this.resolvedFailures = {};
+          this.resolvedFailures[qId] = {
+            questionId: qId,
+            blockNumber: blockNum,
+            concept: (question ? question.question.slice(0, 80) + "..." : "") || prevFail.concept,
+            failureCount: prevFail.failureCount || 1,
+            resolvedAt: new Date().toISOString(),
+            resolvedWith: existing.selected || [],
+            forcedCorrect: true,
+            forcedReason: customReason
+          };
+          delete this.failures[qId];
+        }
+        delete this.doubts[qId];
+      } else {
+        if (!this.failures[qId]) {
+          this.failures[qId] = {
+            questionId: qId,
+            blockNumber: blockNum,
+            concept: question ? question.question.slice(0, 80) + "..." : "",
+            failureCount: 1,
+            timestamp: new Date().toISOString()
+          };
+        }
+        if (this.resolvedFailures && this.resolvedFailures[qId]) {
+          delete this.resolvedFailures[qId];
+        }
+      }
+    }
+
+    this.saveToStorage();
+  }
+
+  /**
+   * Restablece la respuesta correcta a su valor por defecto (consenso de comunidad o clave oficial)
+   */
+  resetCustomCorrectAnswer(questionId) {
+    const qId = String(questionId);
+    if (!this.customCorrectAnswers || !this.customCorrectAnswers[qId]) return;
+
+    delete this.customCorrectAnswers[qId];
+
+    const question = this.questions.find(q => String(q.id) === qId);
+    if (question) {
+      const defaultCorrect = this.getEffectiveCorrectAnswer(question);
+      const existing = this.answers[qId];
+
+      if (existing && existing.selected) {
+        const userSorted = [...existing.selected].sort().join("");
+        const isNowCorrect = userSorted === defaultCorrect;
+
+        existing.isCorrect = isNowCorrect;
+        delete existing.forcedCorrect;
+        delete existing.customOverridden;
+        delete existing.forcedReason;
+
+        const blockNum = question.blockNumber || 1;
+        if (isNowCorrect) {
+          if (this.failures[qId]) {
+            if (!this.resolvedFailures) this.resolvedFailures = {};
+            this.resolvedFailures[qId] = {
+              questionId: qId,
+              blockNumber: blockNum,
+              concept: question.question.slice(0, 80) + "...",
+              failureCount: this.failures[qId].failureCount || 1,
+              resolvedAt: new Date().toISOString(),
+              resolvedWith: existing.selected
+            };
+            delete this.failures[qId];
+          }
+        } else {
+          if (!this.failures[qId]) {
+            this.failures[qId] = {
+              questionId: qId,
+              blockNumber: blockNum,
+              concept: question.question.slice(0, 80) + "...",
+              failureCount: 1,
+              timestamp: new Date().toISOString()
+            };
+          }
+          if (this.resolvedFailures && this.resolvedFailures[qId]) {
+            delete this.resolvedFailures[qId];
+          }
+        }
+      }
+    }
+
+    this.saveToStorage();
+  }
+
+  /**
+   * Fuerza el acierto de una pregunta
    */
   forceCorrect(questionId, customReason = "Alineado con consenso de comunidad") {
     const qId = String(questionId);
     const existing = this.answers[qId];
-    if (!existing) return;
-
-    existing.isCorrect = true;
-    existing.forcedCorrect = true;
-    existing.forcedReason = customReason;
-
-    // Eliminar de la base de fallos (rojas) y archivar en fallos resueltos/consolidados
-    const prevFail = this.failures[qId];
-    if (prevFail) {
-      if (!this.resolvedFailures) this.resolvedFailures = {};
+    if (existing && existing.selected && existing.selected.length > 0) {
+      this.setCustomCorrectAnswer(qId, existing.selected, customReason);
+    } else {
       const question = this.questions.find(q => String(q.id) === qId);
-      this.resolvedFailures[qId] = {
-        questionId: qId,
-        blockNumber: question ? question.blockNumber : (existing.blockNumber || 1),
-        concept: (question ? question.question.slice(0, 80) + "..." : "") || prevFail.concept,
-        failureCount: prevFail.failureCount || 1,
-        resolvedAt: new Date().toISOString(),
-        resolvedWith: existing.selected || [],
-        forcedCorrect: true,
-        forcedReason: customReason
-      };
-      delete this.failures[qId];
+      if (question) {
+        const defaultEffective = this.getEffectiveCorrectAnswer(question);
+        this.setCustomCorrectAnswer(qId, defaultEffective, customReason);
+      }
     }
-    delete this.doubts[qId];
-
-    this.saveToStorage();
   }
 
   /**
-   * Revierte el forzado de acierto devolviendo la pregunta a su estado de fallo original
+   * Revierte el forzado de acierto devolviendo la pregunta a su estado por defecto
    */
   revertToIncorrect(questionId) {
-    const qId = String(questionId);
-    const existing = this.answers[qId];
-    if (!existing) return;
-
-    existing.isCorrect = false;
-    existing.forcedCorrect = false;
-    delete existing.forcedReason;
-
-    if (this.resolvedFailures && this.resolvedFailures[qId]) {
-      delete this.resolvedFailures[qId];
-    }
-
-    const question = this.questions.find(q => String(q.id) === qId);
-    this.failures[qId] = {
-      questionId: qId,
-      blockNumber: question ? question.blockNumber : 1,
-      concept: question ? question.question.slice(0, 80) + "..." : "",
-      failureCount: 1,
-      timestamp: new Date().toISOString()
-    };
-
-    this.saveToStorage();
+    this.resetCustomCorrectAnswer(questionId);
   }
 
   /**
@@ -475,7 +727,11 @@ class ExamStore {
       recallHistory: this.recallHistory,
       doubts: this.doubts,
       mnemonics: this.mnemonics,
-      pomodoroStats: this.pomodoroStats,
+      completedBlocks: this.completedBlocks,
+      pendingExams: this.pendingExams,
+      customCorrectAnswers: this.customCorrectAnswers,
+      focusStats: this.focusStats,
+      pomodoroStats: this.focusStats,
       settings: this.settings
     };
     return JSON.stringify(exportData, null, 2);
@@ -493,7 +749,16 @@ class ExamStore {
       if (data.recallHistory) this.recallHistory = data.recallHistory;
       if (data.doubts) this.doubts = data.doubts;
       if (data.mnemonics) this.mnemonics = data.mnemonics;
-      if (data.pomodoroStats) this.pomodoroStats = data.pomodoroStats;
+      if (data.completedBlocks) this.completedBlocks = data.completedBlocks;
+      if (data.pendingExams) this.pendingExams = data.pendingExams;
+      if (data.customCorrectAnswers) this.customCorrectAnswers = data.customCorrectAnswers;
+      if (data.focusStats) {
+        this.focusStats = data.focusStats;
+        this.pomodoroStats = this.focusStats;
+      } else if (data.pomodoroStats) {
+        this.focusStats = data.pomodoroStats;
+        this.pomodoroStats = this.focusStats;
+      }
       if (data.settings) this.settings = { ...this.settings, ...data.settings };
       if (data.questions && Array.isArray(data.questions)) this.questions = data.questions;
 
@@ -537,7 +802,11 @@ class ExamStore {
     this.recallHistory = [];
     this.doubts = {};
     this.mnemonics = {};
-    this.pomodoroStats = { completedSessions: 0, totalFocusMinutes: 0 };
+    this.completedBlocks = {};
+    this.pendingExams = {};
+    this.customCorrectAnswers = {};
+    this.focusStats = { completedSessions: 0, totalFocusMinutes: 0 };
+    this.pomodoroStats = this.focusStats;
     this.saveToStorage();
   }
 }
