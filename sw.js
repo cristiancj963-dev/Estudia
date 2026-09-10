@@ -1,15 +1,15 @@
-const CACHE_NAME = 'estudia-aws-v17';
+const CACHE_NAME = 'estudia-aws-v18';
 const ASSETS_TO_CACHE = [
   './',
   'index.html',
   'manifest.json',
-  'css/styles.css',
-  'js/repemill-data.js?v=3.7',
-  'js/highlighter.js?v=3.7',
-  'js/focus-timer.js?v=3.7',
-  'js/parser.js?v=3.7',
-  'js/store.js?v=3.7',
-  'js/app.js?v=3.7',
+  'css/styles.css?v=3.8',
+  'js/repemill-data.js?v=3.8',
+  'js/highlighter.js?v=3.8',
+  'js/focus-timer.js?v=3.8',
+  'js/parser.js?v=3.8',
+  'js/store.js?v=3.8',
+  'js/app.js?v=3.8',
   'data/sap_c02_questions.json',
   'icons/apple-touch-icon.png',
   'icons/icon-192.png',
