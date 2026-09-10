@@ -168,9 +168,16 @@ class App {
 
   navigate(viewName) {
     this.currentView = viewName;
-    window.location.hash = viewName;
+    if (typeof window !== "undefined" && window.location) {
+      window.location.hash = viewName;
+    }
+    if (typeof document !== "undefined" && document.body) {
+      document.body.classList.toggle("view-test", viewName === "test");
+    }
     this.render();
-    window.scrollTo(0, 0);
+    if (typeof window !== "undefined" && typeof window.scrollTo === "function") {
+      window.scrollTo(0, 0);
+    }
   }
 
   // =========================================================================
@@ -1399,6 +1406,10 @@ function doPost(e) {
     const container = document.getElementById("view-container");
     if (!container) return;
 
+    if (typeof document !== "undefined" && document.body) {
+      document.body.classList.toggle("view-test", this.currentView === "test");
+    }
+
     if (this.currentView === "dashboard") {
       this.renderDashboard();
     } else if (this.currentView === "test") {
@@ -1426,19 +1437,19 @@ function doPost(e) {
       const playIcon = data.isRunning ? "pause" : "play";
 
       el.innerHTML = `
-        <div class="flex items-center gap-2 sm:gap-3 bg-slate-900/80 backdrop-blur border border-slate-800 rounded-xl px-3 py-1.5 shadow-lg ${data.isRunning && data.mode === 'focus' ? 'focus-active-pulse' : ''}">
+        <div class="flex items-center gap-1.5 sm:gap-2.5 bg-slate-900/80 backdrop-blur border border-slate-800 rounded-xl px-2 sm:px-3 py-1 sm:py-1.5 shadow-lg ${data.isRunning && data.mode === 'focus' ? 'focus-active-pulse' : ''}">
           <div class="flex flex-col">
-            <div class="flex items-center gap-1.5">
+            <div class="flex items-center gap-1 sm:gap-1.5">
               <span class="inline-block w-2 h-2 rounded-full ${data.isRunning ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}"></span>
-              <span class="text-xs font-mono font-bold tracking-tight text-white text-base">${data.formatted}</span>
+              <span class="text-xs sm:text-sm font-mono font-bold tracking-tight text-white">${data.formatted}</span>
             </div>
-            <span class="text-[10px] uppercase tracking-wider font-semibold text-slate-400">${modeLabel}</span>
+            <span class="hidden sm:inline text-[9px] uppercase tracking-wider font-semibold text-slate-400">${modeLabel}</span>
           </div>
-          <div class="flex items-center gap-1">
-            <button onclick="app.pomodoro.toggle()" class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition" title="${data.isRunning ? 'Pausar Foco' : 'Iniciar Foco Intenso'}">
+          <div class="flex items-center gap-0.5 sm:gap-1">
+            <button onclick="app.pomodoro.toggle()" class="p-1 sm:p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 transition" title="${data.isRunning ? 'Pausar Foco' : 'Iniciar Foco Intenso'}">
               <i data-lucide="${playIcon}" class="w-3.5 h-3.5"></i>
             </button>
-            <button onclick="app.pomodoro.reset()" class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition" title="Reiniciar">
+            <button onclick="app.pomodoro.reset()" class="hidden sm:inline-flex p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 transition" title="Reiniciar">
               <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i>
             </button>
           </div>
@@ -1475,7 +1486,7 @@ function doPost(e) {
       <div class="max-w-7xl mx-auto space-y-8 animate-fadeIn">
         
         <!-- Header Principal & Estado de Preparación -->
-        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-gradient-to-r from-slate-900 via-indigo-950/40 to-slate-900 p-6 rounded-2xl border border-slate-800 shadow-xl">
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-gradient-to-r from-slate-900 via-indigo-950/40 to-slate-900 p-4 sm:p-6 rounded-2xl border border-slate-800 shadow-xl">
           <div>
             <div class="flex items-center gap-2 text-indigo-400 font-semibold text-xs uppercase tracking-wider mb-1">
               <i data-lucide="shield-check" class="w-4 h-4"></i>
@@ -1489,20 +1500,20 @@ function doPost(e) {
             </p>
           </div>
 
-          <div class="flex flex-wrap items-center gap-3">
-            <button onclick="app.openSyncModal()" class="flex items-center gap-2 bg-indigo-950/70 hover:bg-indigo-900/80 text-indigo-300 border border-indigo-500/40 px-3.5 py-2 rounded-xl text-sm font-semibold transition shadow-sm">
+          <div class="flex flex-wrap items-center gap-2 sm:gap-3 w-full sm:w-auto">
+            <button onclick="app.openSyncModal()" class="flex-1 sm:flex-initial justify-center flex items-center gap-2 bg-indigo-950/70 hover:bg-indigo-900/80 text-indigo-300 border border-indigo-500/40 px-3.5 py-2 rounded-xl text-sm font-semibold transition shadow-sm">
               <i data-lucide="cloud" class="w-4 h-4 text-indigo-400"></i>
               <span>Drive Sync</span>
             </button>
 
-            <button onclick="app.openIngestModal()" class="flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 px-3.5 py-2 rounded-xl text-sm font-semibold border border-slate-700 transition shadow-sm">
+            <button onclick="app.openIngestModal()" class="flex-1 sm:flex-initial justify-center flex items-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 px-3.5 py-2 rounded-xl text-sm font-semibold border border-slate-700 transition shadow-sm">
               <i data-lucide="upload-cloud" class="w-4 h-4 text-cyan-400"></i>
-              <span>Cargar PDF / JSON</span>
+              <span>Cargar Dump</span>
             </button>
 
-            <button onclick="app.startRecallSession()" class="flex items-center gap-2 ${recallCount > 0 ? 'bg-rose-600 hover:bg-rose-500 animate-pulse' : 'bg-slate-800 text-slate-400'} text-white px-4 py-2 rounded-xl text-sm font-semibold transition shadow-lg shadow-rose-900/20">
+            <button onclick="app.startRecallSession()" class="w-full sm:w-auto justify-center flex items-center gap-2 ${recallCount > 0 ? 'bg-rose-600 hover:bg-rose-500 animate-pulse' : 'bg-slate-800 text-slate-400'} text-white px-4 py-2 rounded-xl text-sm font-semibold transition shadow-lg shadow-rose-900/20">
               <i data-lucide="flame" class="w-4 h-4"></i>
-              <span>Active Recall 24h (${recallCount})</span>
+              <span>Active Recall (${recallCount})</span>
             </button>
           </div>
         </div>
@@ -1708,35 +1719,34 @@ function doPost(e) {
     container.innerHTML = `
       <div class="max-w-4xl mx-auto space-y-4 pb-20 animate-fadeIn">
         
-        <!-- Barra de Control del Test (Header Zen) -->
-        <div class="flex items-center justify-between bg-slate-900/90 border border-slate-800 p-3 rounded-2xl shadow-lg sticky top-3 z-30 backdrop-blur">
-          <div class="flex items-center gap-2 sm:gap-3">
-            <button onclick="app.navigate('dashboard')" class="flex items-center gap-1 text-slate-400 hover:text-white text-xs font-semibold py-1.5 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 transition">
-              <i data-lucide="arrow-left" class="w-3.5 h-3.5"></i>
+        <!-- Barra de Control del Test (Header Zen / Test Header Bar) -->
+        <div class="test-header-bar flex items-center justify-between bg-slate-900/95 border border-slate-800 p-2 sm:p-3 rounded-2xl shadow-lg sticky top-2 sm:top-3 z-30 backdrop-blur transition-all">
+          <div class="flex items-center gap-1.5 sm:gap-3 min-w-0 flex-1 mr-1 sm:mr-2">
+            <button onclick="app.navigate('dashboard')" class="flex-shrink-0 flex items-center gap-1 text-slate-400 hover:text-white text-xs font-semibold p-1.5 sm:px-2.5 sm:py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 transition" title="Volver al Dashboard">
+              <i data-lucide="arrow-left" class="w-4 h-4 sm:w-3.5 sm:h-3.5"></i>
               <span class="hidden sm:inline">Dashboard</span>
             </button>
 
-            <div class="flex flex-col">
-              <div class="flex items-center gap-2">
-                <span class="text-xs font-bold text-white tracking-tight">${this.activeSession.title}</span>
-                ${isExam ? `<span class="bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[9px] font-mono font-bold px-1.5 py-0.5 rounded uppercase">Examen en Curso</span>` : ''}
-                ${isReview ? `<span class="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[9px] font-mono font-bold px-1.5 py-0.5 rounded uppercase">Modo Revisión</span>` : ''}
+            <div class="flex flex-col min-w-0">
+              <div class="flex items-center gap-1 sm:gap-2">
+                <span class="text-xs font-bold text-white tracking-tight truncate">${this.activeSession.title}</span>
+                ${isExam ? `<span class="hidden sm:inline-block bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[9px] font-mono font-bold px-1.5 py-0.5 rounded uppercase flex-shrink-0">Examen</span>` : ''}
+                ${isReview ? `<span class="hidden sm:inline-block bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[9px] font-mono font-bold px-1.5 py-0.5 rounded uppercase flex-shrink-0">Revisión</span>` : ''}
               </div>
-              <span class="text-[11px] text-slate-400">Pregunta ${this.activeSession.currentIndex + 1} de ${totalQ} ${requiredChoicesText}</span>
+              <span class="text-[10px] sm:text-[11px] text-slate-400 truncate">Q ${this.activeSession.currentIndex + 1} de ${totalQ} ${isMulti ? `(Elige ${q.multiSelectCount})` : ''}</span>
             </div>
           </div>
 
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-1 sm:gap-2 flex-shrink-0">
             <!-- Botón de Duda (Amarilla) -->
-            <button onclick="app.toggleCurrentDoubt()" class="flex items-center gap-1 text-xs font-semibold py-1.5 px-3 rounded-lg border transition ${isDoubt ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200'}" title="Marcar como Dudosa [D]">
+            <button onclick="app.toggleCurrentDoubt()" class="flex items-center gap-1 text-xs font-semibold py-1.5 px-2 sm:px-3 rounded-lg border transition ${isDoubt ? 'bg-amber-500/20 text-amber-300 border-amber-500/40' : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200'}" title="Marcar como Dudosa [D]">
               <i data-lucide="help-circle" class="w-3.5 h-3.5 ${isDoubt ? 'text-amber-400' : ''}"></i>
-              <span class="hidden sm:inline">${isDoubt ? 'Dudosa' : 'Marcar Duda'}</span>
-              <span class="key-badge ml-1 hidden md:inline-flex">D</span>
+              <span class="hidden md:inline">${isDoubt ? 'Dudosa' : 'Marcar Duda'}</span>
             </button>
 
             <!-- Botón Ver Repemill del Bloque (Solo en Revisión o Pregunta Calificada) -->
             ${(isReview || isGraded) ? `
-              <button onclick="app.openRepemillModal(${q.blockNumber})" class="flex items-center gap-1 text-xs font-semibold py-1.5 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-indigo-400 border border-slate-700 transition" title="Patrones del Bloque">
+              <button onclick="app.openRepemillModal(${q.blockNumber})" class="flex items-center gap-1 text-xs font-semibold py-1.5 px-2 sm:px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-indigo-400 border border-slate-700 transition" title="Patrones del Bloque">
                 <i data-lucide="book-open" class="w-3.5 h-3.5"></i>
                 <span class="hidden md:inline">Repemill</span>
               </button>
@@ -1744,43 +1754,40 @@ function doPost(e) {
 
             <!-- Botón Finalizar / Salir -->
             ${isReview ? `
-              <button onclick="app.navigate('dashboard')" class="flex items-center gap-1.5 text-xs font-bold py-1.5 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition" title="Volver al Dashboard">
+              <button onclick="app.navigate('dashboard')" class="flex items-center gap-1 text-xs font-bold py-1.5 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition" title="Volver al Dashboard">
                 <i data-lucide="layout-dashboard" class="w-3.5 h-3.5"></i>
                 <span class="hidden sm:inline">Dashboard</span>
               </button>
             ` : `
-              <button onclick="app.requestFinishSession()" class="flex items-center gap-1.5 text-xs font-bold py-1.5 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition" title="Finalizar Sesión y ver Resultados">
+              <button onclick="app.requestFinishSession()" class="flex items-center gap-1 text-xs font-bold py-1.5 px-2 sm:px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition" title="Finalizar Sesión y ver Resultados">
                 <i data-lucide="check-square" class="w-3.5 h-3.5"></i>
-                <span class="hidden sm:inline">Finalizar</span>
-                <span>${isRecall ? 'Simulacro' : 'Examen'}</span>
+                <span class="text-xs">Finalizar</span>
               </button>
             `}
 
-            <!-- Botón Reiniciar Bloque en Curso -->
+            <!-- Botón Reiniciar Bloque en Curso (solo sm+) -->
             ${isBlock ? `
-              <button onclick="app.confirmResetBlock(${this.activeSession.blockNumber})" class="flex items-center gap-1 text-xs font-semibold py-1.5 px-2.5 rounded-lg bg-slate-800 hover:bg-rose-950/60 text-slate-400 hover:text-rose-300 border border-slate-700 transition" title="Reiniciar este Bloque desde cero">
+              <button onclick="app.confirmResetBlock(${this.activeSession.blockNumber})" class="hidden sm:flex items-center gap-1 text-xs font-semibold py-1.5 px-2.5 rounded-lg bg-slate-800 hover:bg-rose-950/60 text-slate-400 hover:text-rose-300 border border-slate-700 transition" title="Reiniciar este Bloque desde cero">
                 <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i>
                 <span class="hidden lg:inline">Reiniciar</span>
               </button>
             ` : ''}
 
-            <!-- Botón Foco Intenso (Manual) -->
-            <button id="test-focus-btn" onclick="app.pomodoro.toggle()" class="flex items-center gap-1.5 text-xs font-semibold py-1.5 px-2.5 rounded-lg border transition ${this.pomodoro.isRunning ? 'bg-indigo-600/30 text-indigo-300 border-indigo-500/50 focus-active-pulse' : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200'}" title="${this.pomodoro.isRunning ? 'Pausar Foco Intenso' : 'Activar Foco Intenso Manualmente'} [T]">
+            <!-- Botón Foco Intenso (Manual) (en móvil está en el cronómetro global, aquí para sm+) -->
+            <button id="test-focus-btn" onclick="app.pomodoro.toggle()" class="hidden sm:flex items-center gap-1.5 text-xs font-semibold py-1.5 px-2.5 rounded-lg border transition ${this.pomodoro.isRunning ? 'bg-indigo-600/30 text-indigo-300 border-indigo-500/50 focus-active-pulse' : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200'}" title="${this.pomodoro.isRunning ? 'Pausar Foco Intenso' : 'Activar Foco Intenso Manualmente'} [T]">
               <i data-lucide="${this.pomodoro.isRunning ? 'pause' : 'play'}" class="w-3.5 h-3.5 ${this.pomodoro.isRunning ? 'text-indigo-400' : ''}"></i>
               <span class="font-mono text-xs font-bold">${this.pomodoro.getTimeData().formatted}</span>
-              <span class="hidden xl:inline text-[10px] uppercase font-semibold text-slate-400 ml-0.5">${this.pomodoro.getTimeData().mode === 'focus' ? 'Foco' : 'Descanso'}</span>
-              <span class="key-badge ml-1 hidden lg:inline-flex">T</span>
             </button>
 
             <!-- Modo Zen -->
             <button onclick="app.toggleZenMode()" class="p-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-white transition" title="Modo Zen [Z]">
-              <i data-lucide="${store.settings.zenMode ? 'minimize-2' : 'maximize-2'}" class="w-4 h-4"></i>
+              <i data-lucide="${store.settings.zenMode ? 'minimize-2' : 'maximize-2'}" class="w-3.5 h-3.5 sm:w-4 sm:h-4"></i>
             </button>
           </div>
         </div>
 
         <!-- Selector Compacto de Preguntas (Números pequeños centrados) -->
-        <div class="flex items-center justify-center">
+        <div class="flex items-center justify-center w-full overflow-hidden px-1">
           <div class="inline-flex flex-wrap items-center justify-center gap-1 bg-slate-900/80 border border-slate-800/80 px-2 py-1 rounded-xl shadow-sm max-w-full">
             ${this.activeSession.questions.map((item, idx) => {
               const itemAns = this.activeSession.sessionAnswers ? this.activeSession.sessionAnswers[String(item.id)] : null;
@@ -1809,10 +1816,10 @@ function doPost(e) {
         </div>
 
         <!-- Tarjeta Central de la Pregunta (Mesa de Estudio Limpia) -->
-        <div class="bg-slate-900 border border-slate-800 rounded-3xl p-6 sm:p-8 shadow-2xl space-y-6">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl sm:rounded-3xl p-4 sm:p-8 shadow-2xl space-y-4 sm:space-y-6">
           
           <!-- Encabezado de Pregunta -->
-          <div class="flex items-center justify-between text-xs text-slate-400 pb-3 border-b border-slate-800/80">
+          <div class="flex items-center justify-between text-xs text-slate-400 pb-3 border-b border-slate-800/80 flex-wrap gap-2">
             <span class="font-mono font-bold text-indigo-400 uppercase tracking-wider">Identificador: Q#${q.questionNumber}</span>
             <div class="flex items-center gap-2">
               ${(isGraded || isReview) && q.communityVote ? `<span class="bg-slate-800 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded text-[11px] font-mono">Comunidad: ${q.communityVote}</span>` : ''}
@@ -1851,7 +1858,7 @@ function doPost(e) {
                 : (isGraded && isEffectiveCorrect ? 'bg-emerald-900/80 text-emerald-300 border border-emerald-600/50' : 'bg-slate-800 text-slate-300 border border-slate-700');
 
               return `
-                <div onclick="app.toggleOptionSelection('${letter}')" class="flex items-start gap-4 p-4 rounded-2xl border ${optionClass} ${isReview ? 'cursor-default' : 'cursor-pointer'} transition-all">
+                <div onclick="app.toggleOptionSelection('${letter}')" class="flex items-start gap-3 sm:gap-4 p-3.5 sm:p-4 rounded-2xl border ${optionClass} ${isReview ? 'cursor-default' : 'cursor-pointer'} transition-all">
                   <div class="flex-shrink-0 pt-0.5">
                     <span class="w-6 h-6 rounded-lg flex items-center justify-center font-mono text-xs font-bold ${badgeColor}">
                       ${letter}
@@ -1870,8 +1877,8 @@ function doPost(e) {
           </div>
 
           <!-- Botón de Confirmación / Avance / Finalizar -->
-          <div class="pt-4 flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-slate-800">
-            <div class="text-xs text-slate-400 flex items-center gap-2">
+          <div class="pt-4 flex flex-col sm:flex-row items-center justify-between gap-3 border-t border-slate-800">
+            <div class="text-xs text-slate-400 hidden sm:flex items-center gap-2">
               <span class="key-badge">Espacio</span> o <span class="key-badge">Enter</span> para avanzar
               <span class="key-badge">←</span> <span class="key-badge">→</span> navegar
             </div>
@@ -2129,13 +2136,13 @@ function doPost(e) {
             </p>
           </div>
 
-          <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+          <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-2.5 sm:gap-3">
             <!-- Selector de Pestaña -->
-            <div class="flex items-center bg-slate-800 p-1 rounded-xl border border-slate-700">
-              <button onclick="app.setRepemillTab('components')" class="px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${currentTab === 'components' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}">
+            <div class="flex items-center bg-slate-800 p-1 rounded-xl border border-slate-700 w-full sm:w-auto">
+              <button onclick="app.setRepemillTab('components')" class="flex-1 sm:flex-initial text-center px-2.5 sm:px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${currentTab === 'components' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}">
                 Componentes AWS (${components.length})
               </button>
-              <button onclick="app.setRepemillTab('blocks')" class="px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${currentTab === 'blocks' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}">
+              <button onclick="app.setRepemillTab('blocks')" class="flex-1 sm:flex-initial text-center px-2.5 sm:px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${currentTab === 'blocks' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}">
                 Por Bloques (1-17)
               </button>
             </div>
@@ -2331,7 +2338,7 @@ function doPost(e) {
     container.innerHTML = `
       <div class="max-w-7xl mx-auto space-y-8 animate-fadeIn">
         
-        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-900 p-6 rounded-2xl border border-slate-800">
+        <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-900 p-4 sm:p-6 rounded-2xl border border-slate-800">
           <div>
             <div class="flex items-center gap-2 text-rose-400 font-semibold text-xs uppercase tracking-wider mb-1">
               <i data-lucide="alert-octagon" class="w-4 h-4"></i>
@@ -2345,8 +2352,8 @@ function doPost(e) {
             </p>
           </div>
 
-          <div class="flex items-center gap-3">
-            <button onclick="app.startRecallSession()" ${failures.length === 0 && doubts.length === 0 ? 'disabled' : ''} class="flex items-center gap-2 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition shadow-lg shadow-rose-900/30">
+          <div class="flex items-center gap-3 w-full sm:w-auto">
+            <button onclick="app.startRecallSession()" ${failures.length === 0 && doubts.length === 0 ? 'disabled' : ''} class="w-full sm:w-auto justify-center flex items-center gap-2 bg-rose-600 hover:bg-rose-500 disabled:opacity-40 text-white px-5 py-2.5 rounded-xl text-sm font-semibold transition shadow-lg shadow-rose-900/30">
               <i data-lucide="play" class="w-4 h-4"></i>
               <span>Simulacro Dinámico de Errores</span>
             </button>
