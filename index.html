@@ -97,6 +97,12 @@
         <!-- Cronómetro Pomodoro -->
         <div id="pomodoro-display"></div>
 
+        <!-- Botón Sincronización Google Sheets / Drive -->
+        <button onclick="app.openSyncModal()" class="p-2 rounded-xl bg-indigo-950/60 hover:bg-indigo-900/60 text-indigo-300 border border-indigo-500/40 transition flex items-center gap-1.5 shadow-sm shadow-indigo-950/50" title="Sincronizar con Google Sheets">
+          <i data-lucide="cloud" class="w-4 h-4 text-indigo-400"></i>
+          <span class="hidden xl:inline text-xs font-semibold">Drive Sync</span>
+        </button>
+
         <!-- Botón Exportar Backup -->
         <button onclick="app.exportBackup()" class="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 transition" title="Exportar Backup JSON">
           <i data-lucide="download" class="w-4 h-4"></i>
@@ -130,6 +136,7 @@
         Estudia AWS SAP-C02 • Arquitectura de Alta Disponibilidad, Descarte Rápido y Active Recall.
       </div>
       <div class="flex items-center gap-4 text-slate-400">
+        <button onclick="app.openSyncModal()" class="hover:text-indigo-400 transition flex items-center gap-1"><i data-lucide="cloud" class="w-3.5 h-3.5 text-indigo-400"></i><span>Sincronizar Drive</span></button>
         <button onclick="app.navigate('repemill')" class="hover:text-indigo-400 transition">Tablas Repemill</button>
         <button onclick="app.navigate('failures')" class="hover:text-indigo-400 transition">Base de Fallos</button>
         <button onclick="app.openIngestModal()" class="hover:text-indigo-400 transition">Importar Dump</button>
@@ -213,6 +220,111 @@
           Cerrar Repemill
         </button>
       </div>
+    </div>
+  </div>
+
+  <!-- =========================================================================
+       MODAL DE SINCRONIZACIÓN GOOGLE DRIVE / SHEETS (CLOUD 2-WAY SYNC)
+       ========================================================================= -->
+  <div id="sync-modal" class="fixed inset-0 z-50 bg-slate-950/80 backdrop-blur-sm hidden items-center justify-center p-4">
+    <div class="bg-slate-900 border border-slate-800 rounded-3xl max-w-2xl w-full p-6 sm:p-8 shadow-2xl space-y-6 animate-fadeIn max-h-[90vh] overflow-y-auto">
+      
+      <!-- Encabezado del Modal -->
+      <div class="flex items-center justify-between pb-4 border-b border-slate-800">
+        <div class="flex items-center gap-3">
+          <div class="w-10 h-10 rounded-2xl bg-indigo-600/20 text-indigo-400 flex items-center justify-center border border-indigo-500/30">
+            <i data-lucide="cloud" class="w-5 h-5"></i>
+          </div>
+          <div>
+            <h3 class="text-lg font-bold text-white">Sincronización con Google Drive / Sheets</h3>
+            <p class="text-xs text-slate-400">Guarda y recupera tu progreso entre iPhone, PC y cualquier navegador.</p>
+          </div>
+        </div>
+        <button onclick="app.closeSyncModal()" class="text-slate-400 hover:text-white p-1 rounded-lg bg-slate-800 transition">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <!-- Tarjeta de Estado Actual -->
+      <div id="sync-status-card" class="bg-slate-950/80 p-4 rounded-2xl border border-slate-800 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs">
+        <div class="space-y-1">
+          <div class="flex items-center gap-2">
+            <span id="sync-status-dot" class="w-2.5 h-2.5 rounded-full bg-amber-500"></span>
+            <span id="sync-status-label" class="font-bold text-slate-200">Google Sheet no configurado</span>
+          </div>
+          <div id="sync-last-date" class="text-slate-400 text-[11px]">Última sincronización: Nunca</div>
+        </div>
+        <div class="text-[11px] text-indigo-400 bg-indigo-950/60 border border-indigo-500/30 px-3 py-1.5 rounded-xl font-medium">
+          Privado • Directo a tu Google Drive
+        </div>
+      </div>
+
+      <!-- Botones de Acción de Sincronización Manual -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3.5">
+        <button id="btn-sync-upload" onclick="app.syncUploadToGoogleSheet()" class="flex items-center justify-center gap-2.5 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold p-3.5 rounded-2xl text-xs sm:text-sm transition shadow-lg shadow-indigo-950/50">
+          <i data-lucide="cloud-upload" class="w-4 h-4"></i>
+          <span>Subir Progreso a Drive</span>
+        </button>
+
+        <button id="btn-sync-download" onclick="app.syncDownloadFromGoogleSheet()" class="flex items-center justify-center gap-2.5 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold p-3.5 rounded-2xl text-xs sm:text-sm border border-slate-700 transition">
+          <i data-lucide="cloud-download" class="w-4 h-4 text-cyan-400"></i>
+          <span>Descargar Progreso de Drive</span>
+        </button>
+      </div>
+
+      <!-- Configuración de URL del Web App -->
+      <div class="space-y-2 pt-2 border-t border-slate-800/80">
+        <label for="sync-url-input" class="text-xs font-bold text-slate-300 block">
+          URL de tu Aplicación Web de Google Apps Script:
+        </label>
+        <div class="flex gap-2">
+          <input type="url" id="sync-url-input" placeholder="https://script.google.com/macros/s/.../exec" class="flex-1 bg-slate-950 border border-slate-700 focus:border-indigo-500 rounded-xl px-3.5 py-2 text-xs text-white placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-indigo-500 font-mono">
+          <button onclick="app.saveGoogleSyncUrl()" class="bg-indigo-600/30 hover:bg-indigo-600/50 text-indigo-300 border border-indigo-500/40 px-4 py-2 rounded-xl text-xs font-semibold transition flex-shrink-0">
+            Guardar URL
+          </button>
+        </div>
+        <p class="text-[11px] text-slate-400">
+          Pega esta misma URL en tu iPhone o cualquier otro dispositivo para vincularlos a la misma hoja.
+        </p>
+      </div>
+
+      <!-- Acordeón Desplegable: Guía Paso a Paso -->
+      <details class="group bg-slate-950/60 rounded-2xl border border-slate-800 text-xs">
+        <summary class="p-4 font-bold text-slate-200 cursor-pointer list-none flex items-center justify-between hover:text-indigo-400 transition">
+          <span class="flex items-center gap-2">
+            <i data-lucide="help-circle" class="w-4 h-4 text-cyan-400"></i>
+            <span>¿Cómo crear y desplegar tu Google Sheet en 2 minutos?</span>
+          </span>
+          <i data-lucide="chevron-down" class="w-4 h-4 transition-transform group-open:rotate-180"></i>
+        </summary>
+        <div class="p-4 pt-0 space-y-3 text-slate-300 border-t border-slate-800/60 mt-2">
+          <ol class="list-decimal list-inside space-y-2 text-[11px] text-slate-300 leading-relaxed">
+            <li>Abre <a href="https://sheets.new" target="_blank" class="text-cyan-400 underline">sheets.new</a> en tu navegador para crear una nueva hoja en tu Google Drive.</li>
+            <li>En el menú superior, ve a <strong>Extensiones &gt; Apps Script</strong>.</li>
+            <li>Borra el código que aparezca y pega el script de abajo.</li>
+            <li>Haz clic arriba a la derecha en <strong>Implementar &gt; Nueva implementación</strong>.</li>
+            <li>En el engranaje ⚙️ elige <strong>Aplicación web</strong>:
+              <ul class="list-disc list-inside pl-4 text-slate-400 mt-1">
+                <li>Ejecutar como: <strong>Yo (mi cuenta)</strong></li>
+                <li>Quién tiene acceso: <strong>Cualquier usuario</strong></li>
+              </ul>
+            </li>
+            <li>Pulsa <strong>Implementar</strong>, autoriza los permisos de lectura/escritura y copia la <strong>URL de la aplicación web</strong> (termina en <code>/exec</code>).</li>
+          </ol>
+
+          <div class="pt-2">
+            <div class="flex items-center justify-between pb-1 text-[11px]">
+              <span class="font-mono text-slate-400">Código de Apps Script:</span>
+              <button onclick="app.copyAppsScriptCode()" class="text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1 transition">
+                <i data-lucide="copy" class="w-3.5 h-3.5"></i>
+                <span>Copiar Código</span>
+              </button>
+            </div>
+            <pre class="bg-slate-900 p-3 rounded-xl border border-slate-800 text-[10px] font-mono text-slate-300 overflow-x-auto max-h-48 leading-tight selection:bg-indigo-600"><code id="apps-script-code-snippet"></code></pre>
+          </div>
+        </div>
+      </details>
+
     </div>
   </div>
 

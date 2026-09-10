@@ -26,7 +26,9 @@ class ExamStore {
       darkMode: true,
       soundEnabled: true,
       autoAdvanceOnCorrect: true,
-      zenMode: false
+      zenMode: false,
+      googleSyncUrl: "",
+      lastCloudSync: null
     };
 
     this.listeners = [];
@@ -382,6 +384,29 @@ class ExamStore {
     } catch (err) {
       return { success: false, error: err.message };
     }
+  }
+
+  /**
+   * Métodos de configuración para Google Sheets / Drive Sync
+   */
+  getGoogleSyncUrl() {
+    return (this.settings && this.settings.googleSyncUrl) || "";
+  }
+
+  setGoogleSyncUrl(url) {
+    if (!this.settings) this.settings = {};
+    this.settings.googleSyncUrl = (url || "").trim();
+    this.saveToStorage();
+  }
+
+  getLastCloudSync() {
+    return (this.settings && this.settings.lastCloudSync) || null;
+  }
+
+  setLastCloudSync(isoString) {
+    if (!this.settings) this.settings = {};
+    this.settings.lastCloudSync = isoString;
+    this.saveToStorage();
   }
 
   /**
