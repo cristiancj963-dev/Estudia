@@ -1,7 +1,7 @@
 /**
  * APLICACIÓN PRINCIPAL (APP CONTROLLER)
  * Single Page Application de Alto Rendimiento para AWS SAP-C02
- * Metodología: Active Recall, Descarte Rápido 2x2, Bloques Parkinson y Repaso Espaciado
+ * Metodología: Active Recall, Descarte Rápido 2x2, Bloques de Estudio y Repaso Espaciado
  */
 
 class App {
@@ -16,7 +16,7 @@ class App {
       userSelected: [] // Array de letras seleccionadas para la pregunta actual (ej: ['A'] o ['A','C'])
     };
 
-    // Instancia del Cronómetro Pomodoro (35 min con corte en pico)
+    // Instancia del Cronómetro de Foco (35 min con corte en pico)
     this.pomodoro = new PomodoroTimer({
       focusDuration: 35 * 60,
       breakDuration: 5 * 60,
@@ -24,8 +24,8 @@ class App {
       onPeak: () => this.showToast("🔥 ¡PICO DE RENDIMIENTO! Quedan 5 min de máxima retención. Acelera el ritmo antes del corte.", "warning", 6000),
       onComplete: (mode) => {
         if (mode === "focus") {
-          store.addCompletedPomodoro(35);
-          this.showToast("🔔 ¡Bloque Pomodoro de 35 min completado! Tómate 5 min de descanso para consolidación neuronal.", "success", 8000);
+          store.addCompletedFocusSession(35);
+          this.showToast("🔔 ¡Bloque de Foco de 35 min completado! Tómate 5 min de descanso para consolidación neuronal.", "success", 8000);
         } else {
           this.showToast("⚡ Descanso finalizado. Listo para el siguiente bloque de alta intensidad.", "info", 5000);
         }
@@ -147,7 +147,7 @@ class App {
           return;
         }
 
-        // Tecla T: Alternar Cronómetro Pomodoro (Foco Intenso manual)
+        // Tecla T: Alternar Cronómetro de Foco (Foco Intenso manual)
         if (keyUpper === "T") {
           e.preventDefault();
           this.pomodoro.toggle();
@@ -165,7 +165,7 @@ class App {
   }
 
   // =========================================================================
-  // CONTROLADOR DE SESIONES DE TEST (PARKINSON & ACTIVE RECALL)
+  // CONTROLADOR DE SESIONES DE TEST (BLOQUES & ACTIVE RECALL)
   // =========================================================================
 
   startBlockSession(blockNumber) {
@@ -702,7 +702,7 @@ function doPost(e) {
       summarySheet.appendRow(["Aciertos Totales", data.stats.totalCorrect || 0]);
       summarySheet.appendRow(["Fallos Registrados", data.stats.totalFailed || 0]);
       summarySheet.appendRow(["Preguntas en Duda", data.stats.totalDoubtful || 0]);
-      summarySheet.appendRow(["Sesiones Foco Pomodoro", (data.pomodoroStats && data.pomodoroStats.completedSessions) || 0]);
+      summarySheet.appendRow(["Sesiones de Foco", ((data.focusStats || data.pomodoroStats) && (data.focusStats || data.pomodoroStats).completedSessions) || 0]);
       if (data.resolvedFailures) {
         summarySheet.appendRow(["Errores Consolidados/Superados", Object.keys(data.resolvedFailures).length]);
       }
@@ -1058,7 +1058,7 @@ function doPost(e) {
   }
 
   // =========================================================================
-  // VISTA 1: DASHBOARD GENERAL (PARKINSON & MÉTRICAS)
+  // VISTA 1: DASHBOARD GENERAL (BLOQUES & MÉTRICAS)
   // =========================================================================
 
   renderDashboard() {
@@ -1081,7 +1081,7 @@ function doPost(e) {
               Plataforma de Entrenamiento Intensivo <span class="text-indigo-400 font-mono">SAP-C02</span>
             </h1>
             <p class="text-slate-400 text-sm mt-1">
-              Bloques cerrados de 25 preguntas (Ley de Parkinson), feedback de descarte inmediato y repetición espaciada 24h.
+              Bloques cerrados de 25 preguntas, feedback de descarte inmediato y repetición espaciada 24h.
             </p>
           </div>
 
@@ -1161,14 +1161,14 @@ function doPost(e) {
             </div>
           </div>
 
-          <!-- Sesiones de Enfoque Pomodoro -->
+          <!-- Sesiones de Enfoque (Foco Intenso) -->
           <div class="col-span-2 lg:col-span-1 bg-slate-900/90 border border-slate-800 p-4 rounded-xl">
             <div class="flex items-center justify-between text-slate-400 text-xs font-semibold uppercase">
               <span>Sesiones de Enfoque</span>
               <i data-lucide="clock" class="w-4 h-4 text-indigo-400"></i>
             </div>
             <div class="mt-2 text-2xl sm:text-3xl font-extrabold text-indigo-400 font-mono">
-              ${stats.completedPomodoros} <span class="text-sm font-normal text-slate-400">bloques</span>
+              ${stats.completedFocusSessions || stats.completedPomodoros} <span class="text-sm font-normal text-slate-400">bloques</span>
             </div>
             <div class="text-xs text-slate-400 mt-1">
               ${stats.totalFocusMinutes} min en pico de atención
@@ -1176,16 +1176,16 @@ function doPost(e) {
           </div>
         </div>
 
-        <!-- Grid de Sesiones / Bloques Parkinson (25 Preguntas Cada Una) -->
+        <!-- Grid de Sesiones / Bloques de Entrenamiento (25 Preguntas Cada Una) -->
         <div>
           <div class="flex items-center justify-between mb-4">
             <div>
               <h2 class="text-xl font-bold text-white tracking-tight flex items-center gap-2">
                 <i data-lucide="layout-grid" class="w-5 h-5 text-indigo-400"></i>
-                Sesiones Cerradas de Entrenamiento (Ley de Parkinson)
+                Sesiones de Entrenamiento (Bloques de 25 Preguntas)
               </h2>
               <p class="text-xs text-slate-400 mt-0.5">
-                Cada bloque de 25 preguntas está calibrado para completarse en un Pomodoro de 35 minutos sin fatiga mental.
+                Cada bloque de 25 preguntas está calibrado para completarse en 35 minutos de foco sin fatiga mental.
               </p>
             </div>
             <button onclick="app.navigate('repemill')" class="text-xs font-semibold text-indigo-400 hover:text-indigo-300 flex items-center gap-1 transition">
@@ -1935,7 +1935,7 @@ function doPost(e) {
       <div class="space-y-3">
         <div class="flex items-center justify-between text-xs text-slate-300">
           <span>Vista Previa (${questions.length} preguntas totales encontradas):</span>
-          <span class="text-emerald-400 font-bold">${Math.ceil(questions.length / 25)} Bloques Parkinson</span>
+          <span class="text-emerald-400 font-bold">${Math.ceil(questions.length / 25)} Bloques de Estudio</span>
         </div>
         <div class="space-y-2 max-h-48 overflow-y-auto p-2 bg-slate-950 rounded-xl border border-slate-800 text-xs">
           ${sample.map(q => `

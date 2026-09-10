@@ -248,16 +248,22 @@ class ExamStore {
   }
 
   /**
-   * Incrementa el contador de Pomodoros completados
+   * Incrementa el contador de sesiones de foco completadas
    */
-  addCompletedPomodoro(durationMinutes = 35) {
-    this.pomodoroStats.completedSessions = (this.pomodoroStats.completedSessions || 0) + 1;
-    this.pomodoroStats.totalFocusMinutes = (this.pomodoroStats.totalFocusMinutes || 0) + durationMinutes;
+  addCompletedFocusSession(durationMinutes = 35) {
+    if (!this.focusStats) this.focusStats = { completedSessions: 0, totalFocusMinutes: 0 };
+    this.focusStats.completedSessions = (this.focusStats.completedSessions || 0) + 1;
+    this.focusStats.totalFocusMinutes = (this.focusStats.totalFocusMinutes || 0) + durationMinutes;
+    this.pomodoroStats = this.focusStats;
     this.saveToStorage();
   }
 
+  addCompletedPomodoro(durationMinutes = 35) {
+    return this.addCompletedFocusSession(durationMinutes);
+  }
+
   /**
-   * Divide las preguntas en bloques cerrados de 25 preguntas (Ley de Parkinson)
+   * Divide las preguntas en bloques cerrados de 25 preguntas
    */
   getBlocksSummary() {
     const blocks = [];
@@ -347,8 +353,9 @@ class ExamStore {
       totalFailuresInDb,
       totalResolvedFailures,
       totalRecallSessions,
-      completedPomodoros: this.pomodoroStats.completedSessions || 0,
-      totalFocusMinutes: this.pomodoroStats.totalFocusMinutes || 0
+      completedFocusSessions: ((this.focusStats || this.pomodoroStats) && (this.focusStats || this.pomodoroStats).completedSessions) || 0,
+      completedPomodoros: ((this.focusStats || this.pomodoroStats) && (this.focusStats || this.pomodoroStats).completedSessions) || 0,
+      totalFocusMinutes: ((this.focusStats || this.pomodoroStats) && (this.focusStats || this.pomodoroStats).totalFocusMinutes) || 0
     };
   }
 

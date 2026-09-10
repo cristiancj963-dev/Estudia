@@ -39,7 +39,7 @@ Simplemente sube la carpeta a cualquier servicio de alojamiento estático:
 │   ├── store.js                 # Gestor reactivo de estado y persistencia (localStorage / IndexedDB)
 │   ├── parser.js                # Parser universal de dumps (PDF.js en navegador + validador JSON)
 │   ├── highlighter.js           # Motor de resaltado inteligente de discriminadores y servicios AWS
-│   ├── pomodoro.js              # Cronómetro Pomodoro 35 min con alerta en pico y Web Audio
+│   ├── pomodoro.js              # Cronómetro de Foco 35 min con alerta en pico y Web Audio
 │   └── repemill-data.js         # Base de datos del "Repemill" (Patrones, servicios óptimos y descartes)
 ├── data/
 │   └── sap_c02_questions.json   # Banco completo normalizado de las 411 preguntas del dump
@@ -50,13 +50,13 @@ Simplemente sube la carpeta a cualquier servicio de alojamiento estático:
 
 ## 🧠 Metodología de Alto Rendimiento Implementada
 
-### 1. Ley de Parkinson (Bloques Cerrados de 25 Preguntas)
+### 1. Bloques Cerrados de 25 Preguntas
 - El banco de 411 preguntas está dividido automáticamente en **17 sesiones cerradas de 25 preguntas** (Sesión 1: Q1-Q25, ..., Sesión 17: Q401-Q411).
 - Evita la fatiga mental y el desgaste cognitivo al fijar un objetivo acotado y alcanzable por sesión.
 
-### 2. Cronómetro Pomodoro Calibrado (35 Minutos) + Corte en Pico
+### 2. Cronómetro de Foco Calibrado (35 Minutos) + Corte en Pico
 - La curva de atención máxima sostenida se optimiza en intervalos de 30 a 35 minutos antes del declive atencional.
-- El cronómetro integrado incluye **Alerta Sonora en Pico de Rendimiento** a los 30 minutos para forzar el remate del bloque y corte de consolidación de 5 minutos.
+- El cronómetro integrado incluye **Alerta Sonora en Pico de Rendimiento** a los 30 minutos para rematar el bloque y corte de consolidación de 5 minutos.
 
 ### 3. El "Repemill" Conceptual (Desgloses de Examen)
 - Para cada uno de los 17 bloques, se genera una tabla técnica estructurada:
@@ -104,5 +104,5 @@ Simplemente sube la carpeta a cualquier servicio de alojamiento estático:
 ---
 
 ## 💾 Respaldo y Persistencia de Datos
-- Todos los aciertos, fallos, notas técnicas y minutos de Pomodoro se guardan de forma automática y transparente en el `localStorage` del navegador.
+- Todos los aciertos, fallos, notas técnicas y minutos de Foco se guardan de forma automática y transparente en el `localStorage` del navegador.
 - Puedes usar los botones **Descargar Backup** y **Restaurar Backup** (formato JSON) en cualquier momento para trasladar tu progreso a otro ordenador o navegador.
