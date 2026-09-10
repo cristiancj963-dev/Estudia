@@ -39,7 +39,7 @@ Simplemente sube la carpeta a cualquier servicio de alojamiento estático:
 │   ├── store.js                 # Gestor reactivo de estado y persistencia (localStorage / IndexedDB)
 │   ├── parser.js                # Parser universal de dumps (PDF.js en navegador + validador JSON)
 │   ├── highlighter.js           # Motor de resaltado inteligente de discriminadores y servicios AWS
-│   ├── pomodoro.js              # Cronómetro de Foco 35 min con alerta en pico y Web Audio
+│   ├── focus-timer.js           # Cronómetro de Foco 35 min con alerta en pico y Web Audio
 │   └── repemill-data.js         # Base de datos del "Repemill" (Patrones, servicios óptimos y descartes)
 ├── data/
 │   └── sap_c02_questions.json   # Banco completo normalizado de las 411 preguntas del dump

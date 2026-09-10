@@ -9,11 +9,13 @@ class App {
     this.currentView = "dashboard"; // "dashboard" | "test" | "repemill" | "failures"
     this.activeSession = {
       type: "block", // "block" | "recall_24h"
+      mode: "exam",  // "exam" | "review"
       blockNumber: 1,
       title: "",
       questions: [],
       currentIndex: 0,
-      userSelected: [] // Array de letras seleccionadas para la pregunta actual (ej: ['A'] o ['A','C'])
+      userSelected: [], // Array de letras seleccionadas para la pregunta actual (ej: ['A'] o ['A','C'])
+      sessionAnswers: {}
     };
 
     // Instancia del Cronómetro de Foco (35 min con corte en pico)
@@ -100,21 +102,28 @@ class App {
         }
 
         if (letterPicked) {
+          if (this.activeSession.type === "block" && this.activeSession.mode === "review") {
+            return;
+          }
           e.preventDefault();
           this.toggleOptionSelection(letterPicked);
           return;
         }
 
-        // Espacio o Enter: Confirmar respuesta si no ha respondido aún
+        // Espacio o Enter: En bloque (examen o revisión) avanza; en recall confirma o avanza
         if (e.key === "Enter" || e.code === "Space") {
           e.preventDefault();
-          const qId = String(q.id);
-          const sessionAns = this.activeSession.sessionAnswers ? this.activeSession.sessionAnswers[qId] : null;
-          const alreadyAnswered = !!sessionAns;
-          if (!alreadyAnswered && this.activeSession.userSelected.length > 0) {
-            this.confirmAnswer();
-          } else if (alreadyAnswered) {
+          if (this.activeSession.type === "block") {
             this.nextQuestion();
+          } else {
+            const qId = String(q.id);
+            const sessionAns = this.activeSession.sessionAnswers ? this.activeSession.sessionAnswers[qId] : null;
+            const alreadyAnswered = !!sessionAns;
+            if (!alreadyAnswered && this.activeSession.userSelected.length > 0) {
+              this.confirmAnswer();
+            } else if (alreadyAnswered) {
+              this.nextQuestion();
+            }
           }
           return;
         }
@@ -178,25 +187,54 @@ class App {
       return;
     }
 
-    // Inicializar sessionAnswers precargando las respuestas del store para este bloque
-    // Esto permite que el usuario revise un bloque completado con todas sus respuestas ya marcadas
-    const sessionAnswers = {};
-    questions.forEach(q => {
-      const saved = store.answers[String(q.id)];
-      if (saved) {
-        sessionAnswers[String(q.id)] = { ...saved };
-      }
-    });
+    const isCompleted = store.isBlockCompleted(blockNumber);
+    const sessionMode = isCompleted ? "review" : "exam";
 
-    const firstQ = questions[0];
+    let sessionAnswers = {};
+    let initialIndex = 0;
+
+    if (isCompleted) {
+      // MODO REVISIÓN: Precargar respuestas evaluadas para este bloque
+      questions.forEach(q => {
+        const saved = store.answers[String(q.id)];
+        if (saved) {
+          sessionAnswers[String(q.id)] = { ...saved };
+        }
+      });
+    } else {
+      // MODO EXAMEN: Precargar borrador pendiente si existe
+      let pending = store.getPendingExam(blockNumber);
+      if (pending && pending.sessionAnswers) {
+        sessionAnswers = { ...pending.sessionAnswers };
+        initialIndex = Math.min(pending.currentIndex || 0, questions.length - 1);
+      } else {
+        // Migración retroactiva: comprobar si había respuestas parciales guardadas
+        const legacyAnswers = {};
+        questions.forEach(q => {
+          const saved = store.answers[String(q.id)];
+          if (saved && saved.selected) {
+            legacyAnswers[String(q.id)] = { selected: [...saved.selected] };
+          }
+        });
+        if (Object.keys(legacyAnswers).length > 0) {
+          sessionAnswers = legacyAnswers;
+          store.savePendingExam(blockNumber, sessionAnswers, 0);
+        }
+      }
+    }
+
+    const firstQ = questions[initialIndex];
     const firstSaved = firstQ ? sessionAnswers[String(firstQ.id)] : null;
 
     this.activeSession = {
       type: "block",
+      mode: sessionMode,
       blockNumber: blockNumber,
-      title: `Sesión ${blockNumber}: Preguntas Q${startIdx + 1} - Q${endIdx}`,
+      title: isCompleted 
+        ? `Revisión Bloque ${blockNumber}: Q${startIdx + 1} - Q${endIdx}`
+        : `Examen Bloque ${blockNumber}: Q${startIdx + 1} - Q${endIdx}`,
       questions: questions,
-      currentIndex: 0,
+      currentIndex: initialIndex,
       userSelected: firstSaved ? [...firstSaved.selected] : [],
       sessionAnswers: sessionAnswers,
       startedAt: new Date().toISOString()
@@ -215,6 +253,7 @@ class App {
 
     this.activeSession = {
       type: "recall_24h",
+      mode: "review",
       blockNumber: 0,
       title: `Active Recall: ${recallQuestions.length} Preguntas Críticas`,
       questions: recallQuestions,
@@ -233,9 +272,17 @@ class App {
     const q = this.activeSession.questions[this.activeSession.currentIndex];
     if (!q) return;
 
-    // Si ya está respondida o en modo revisión, no permitir modificar la selección
-    const sessionAns = this.activeSession.sessionAnswers ? this.activeSession.sessionAnswers[String(q.id)] : null;
-    if (sessionAns) return;
+    const isBlock = this.activeSession.type === "block";
+    const isReview = isBlock && this.activeSession.mode === "review";
+
+    // En modo revisión de un bloque completado, las respuestas son de solo lectura
+    if (isReview) return;
+
+    // En recall_24h, si ya está respondida y confirmada, no modificar
+    if (!isBlock) {
+      const sessionAns = this.activeSession.sessionAnswers ? this.activeSession.sessionAnswers[String(q.id)] : null;
+      if (sessionAns) return;
+    }
 
     const isMulti = (q.multiSelectCount || 1) > 1;
 
@@ -254,6 +301,21 @@ class App {
       this.activeSession.userSelected = [letter];
     }
 
+    // En Modo Examen de Bloque: guardar inmediatamente la selección en sessionAnswers y persistir borrador
+    if (isBlock && this.activeSession.mode === "exam") {
+      if (!this.activeSession.sessionAnswers) this.activeSession.sessionAnswers = {};
+      const qId = String(q.id);
+      if (this.activeSession.userSelected.length > 0) {
+        this.activeSession.sessionAnswers[qId] = {
+          selected: [...this.activeSession.userSelected]
+          // isCorrect NO se define aquí: se evaluará solo al finalizar el bloque
+        };
+      } else {
+        delete this.activeSession.sessionAnswers[qId];
+      }
+      store.savePendingExam(this.activeSession.blockNumber, this.activeSession.sessionAnswers, this.activeSession.currentIndex);
+    }
+
     this.renderTestView();
   }
 
@@ -261,8 +323,8 @@ class App {
     const q = this.activeSession.questions[this.activeSession.currentIndex];
     const qId = String(q.id);
     const selectedSorted = [...this.activeSession.userSelected].sort().join("");
-    const correctSorted = q.correctAnswer.split("").sort().join("");
-    const isCorrect = selectedSorted === correctSorted;
+    const effectiveCorrect = store.getEffectiveCorrectAnswer(q);
+    const isCorrect = selectedSorted === effectiveCorrect;
 
     // Guardar en sessionAnswers de la sesión activa
     if (!this.activeSession.sessionAnswers) this.activeSession.sessionAnswers = {};
@@ -308,6 +370,9 @@ class App {
       const nextQ = this.activeSession.questions[this.activeSession.currentIndex];
       const sessionAns = this.activeSession.sessionAnswers ? this.activeSession.sessionAnswers[String(nextQ.id)] : null;
       this.activeSession.userSelected = sessionAns ? [...sessionAns.selected] : [];
+      if (this.activeSession.type === "block" && this.activeSession.mode === "exam") {
+        store.savePendingExam(this.activeSession.blockNumber, this.activeSession.sessionAnswers, this.activeSession.currentIndex);
+      }
       this.renderTestView();
       window.scrollTo(0, 0);
     } else {
@@ -322,6 +387,9 @@ class App {
       const prevQ = this.activeSession.questions[this.activeSession.currentIndex];
       const sessionAns = this.activeSession.sessionAnswers ? this.activeSession.sessionAnswers[String(prevQ.id)] : null;
       this.activeSession.userSelected = sessionAns ? [...sessionAns.selected] : [];
+      if (this.activeSession.type === "block" && this.activeSession.mode === "exam") {
+        store.savePendingExam(this.activeSession.blockNumber, this.activeSession.sessionAnswers, this.activeSession.currentIndex);
+      }
       this.renderTestView();
       window.scrollTo(0, 0);
     }
@@ -333,6 +401,9 @@ class App {
       const targetQ = this.activeSession.questions[this.activeSession.currentIndex];
       const sessionAns = this.activeSession.sessionAnswers ? this.activeSession.sessionAnswers[String(targetQ.id)] : null;
       this.activeSession.userSelected = sessionAns ? [...sessionAns.selected] : [];
+      if (this.activeSession.type === "block" && this.activeSession.mode === "exam") {
+        store.savePendingExam(this.activeSession.blockNumber, this.activeSession.sessionAnswers, this.activeSession.currentIndex);
+      }
       this.renderTestView();
       window.scrollTo(0, 0);
     }
@@ -340,13 +411,35 @@ class App {
 
   requestFinishSession() {
     const totalQ = this.activeSession.questions.length;
-    const answeredCount = Object.keys(this.activeSession.sessionAnswers || {}).length;
+    const sessionAnswers = this.activeSession.sessionAnswers || {};
+
+    let answeredCount = 0;
+    this.activeSession.questions.forEach(q => {
+      const ans = sessionAnswers[String(q.id)];
+      if (ans && ans.selected && ans.selected.length > 0) {
+        answeredCount++;
+      }
+    });
+
     const unansweredCount = totalQ - answeredCount;
 
-    if (unansweredCount > 0) {
-      const typeLabel = this.activeSession.type === "recall_24h" ? "el simulacro de errores" : "el bloque";
-      const confirmMsg = `Tienes ${unansweredCount} pregunta(s) sin responder de ${totalQ}. ¿Seguro que deseas finalizar ${typeLabel} ahora?`;
-      if (!confirm(confirmMsg)) {
+    if (this.activeSession.type === "recall_24h") {
+      if (unansweredCount > 0) {
+        const confirmMsg = `Tienes ${unansweredCount} pregunta(s) sin responder de ${totalQ}. Se contabilizarán como fallos. ¿Seguro que deseas finalizar el simulacro de errores ahora?`;
+        if (!confirm(confirmMsg)) return;
+      }
+    } else if (this.activeSession.type === "block") {
+      if (this.activeSession.mode === "exam") {
+        if (unansweredCount > 0) {
+          const confirmMsg = `Tienes ${unansweredCount} pregunta(s) sin responder de ${totalQ}. Las preguntas no respondidas se marcarán como erróneas. ¿Deseas finalizar el examen y ver los resultados?`;
+          if (!confirm(confirmMsg)) return;
+        } else {
+          const confirmMsg = `Has respondido las ${totalQ} preguntas. ¿Deseas finalizar el examen ahora y ver tus resultados?`;
+          if (!confirm(confirmMsg)) return;
+        }
+      } else {
+        // En modo revisión, Finalizar redirige al Dashboard
+        this.navigate("dashboard");
         return;
       }
     }
@@ -359,25 +452,34 @@ class App {
     const totalQ = this.activeSession.questions.length;
     const sessionAnswers = this.activeSession.sessionAnswers || {};
 
-    let correctCount = 0;
-    let failedCount = 0;
-    let unansweredCount = 0;
-
-    this.activeSession.questions.forEach(q => {
-      const ans = sessionAnswers[String(q.id)];
-      if (ans) {
-        if (ans.isCorrect) correctCount++;
-        else failedCount++;
-      } else {
-        unansweredCount++;
-      }
-    });
-
-    if (window.confetti) {
-      window.confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
-    }
-
     if (isRecall) {
+      let correctCount = 0;
+      let failedCount = 0;
+      let unansweredCount = 0;
+
+      this.activeSession.questions.forEach(q => {
+        const qId = String(q.id);
+        const ans = sessionAnswers[qId];
+        if (ans && ans.selected && ans.selected.length > 0) {
+          if (ans.isCorrect) correctCount++;
+          else failedCount++;
+        } else {
+          unansweredCount++;
+          failedCount++;
+          sessionAnswers[qId] = {
+            selected: [],
+            isCorrect: false,
+            unanswered: true,
+            timestamp: new Date().toISOString()
+          };
+          store.recordRecallAnswer(q.id, [], false, q.question.slice(0, 100));
+        }
+      });
+
+      if (window.confetti) {
+        window.confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
+      }
+
       const initialNet = this.activeSession.initialNetScore || 0;
       const currentNet = store.getGlobalStats().netScore;
       const netGain = +(currentNet - initialNet).toFixed(1);
@@ -395,9 +497,88 @@ class App {
       store.saveRecallSessionSummary(summary);
       this.showRecallCompletionModal(summary);
     } else {
+      // EVALUAR BLOQUE OFICIAL (CORRECCIÓN FINAL)
       const blockNum = this.activeSession.blockNumber;
-      const accuracy = (correctCount + failedCount) > 0 ? Math.round((correctCount / (correctCount + failedCount)) * 100) : 0;
+      let correctCount = 0;
+      let failedCount = 0;
+      let unansweredCount = 0;
+
+      this.activeSession.questions.forEach(q => {
+        const qId = String(q.id);
+        const ans = sessionAnswers[qId];
+        const effectiveCorrect = store.getEffectiveCorrectAnswer(q);
+
+        if (ans && ans.selected && ans.selected.length > 0) {
+          const selectedSorted = [...ans.selected].sort().join("");
+          const isCorrect = selectedSorted === effectiveCorrect;
+
+          ans.isCorrect = isCorrect;
+          ans.unanswered = false;
+          ans.timestamp = ans.timestamp || new Date().toISOString();
+
+          if (isCorrect) {
+            correctCount++;
+          } else {
+            failedCount++;
+          }
+
+          // Registrar oficialmente en el Store
+          store.recordAnswer(q.id, ans.selected, isCorrect, q.question.slice(0, 100));
+        } else {
+          // Pregunta dejada sin responder: se contabiliza y marca como errónea
+          unansweredCount++;
+          failedCount++;
+
+          const blankAnswer = {
+            selected: [],
+            isCorrect: false,
+            unanswered: true,
+            timestamp: new Date().toISOString()
+          };
+          sessionAnswers[qId] = blankAnswer;
+
+          // Registrar oficialmente en el Store como fallo
+          store.recordAnswer(q.id, [], false, q.question.slice(0, 100));
+        }
+      });
+
+      const evaluatedCount = correctCount + failedCount;
+      const accuracy = evaluatedCount > 0 ? Math.round((correctCount / evaluatedCount) * 100) : 0;
       const netScore = Math.max(0, +(correctCount - (failedCount / 3)).toFixed(1));
+
+      // Guardar bloque como completado en el Store y limpiar borrador
+      store.markBlockCompleted(blockNum, {
+        totalQuestions: totalQ,
+        correctCount,
+        failedCount,
+        unansweredCount,
+        accuracy,
+        netScore
+      });
+
+      // Transicionar la sesión activa a MODO REVISIÓN
+      this.activeSession.mode = "review";
+      const startIdx = (blockNum - 1) * 25;
+      const endIdx = Math.min(blockNum * 25, store.questions.length);
+      this.activeSession.title = `Revisión Bloque ${blockNum}: Q${startIdx + 1} - Q${endIdx}`;
+
+      // Posicionar en la primera pregunta para facilitar la revisión
+      this.activeSession.currentIndex = 0;
+      const firstQ = this.activeSession.questions[0];
+      const firstAns = firstQ ? sessionAnswers[String(firstQ.id)] : null;
+      this.activeSession.userSelected = firstAns ? [...firstAns.selected] : [];
+
+      if (window.confetti) {
+        window.confetti({ particleCount: 100, spread: 70, origin: { y: 0.6 } });
+      }
+
+      if (store.settings.soundEnabled) {
+        if (accuracy >= 75) {
+          this.pomodoro.playTone(880, "sine", 0.15, 0.08);
+        } else {
+          this.pomodoro.playTone(440, "sine", 0.2, 0.08);
+        }
+      }
 
       this.showBlockCompletionModal({
         blockNumber: blockNum,
@@ -408,6 +589,9 @@ class App {
         accuracy,
         netScore
       });
+
+      // Re-renderizar la vista de test en segundo plano (para que al cerrar el modal ya esté en modo revisión)
+      this.renderTestView();
     }
   }
 
@@ -441,8 +625,8 @@ class App {
 
         <div>
           <span class="text-xs font-mono font-bold text-slate-400 uppercase tracking-wider">Sesión ${data.blockNumber} Finalizada</span>
-          <h2 class="text-2xl font-black text-white mt-1">¡Bloque Completado!</h2>
-          <p class="text-xs text-slate-400 mt-1">Has completado el ciclo de estudio de este bloque.</p>
+          <h2 class="text-2xl font-black text-white mt-1">¡Examen de Bloque Finalizado!</h2>
+          <p class="text-xs text-slate-400 mt-1">Has completado el examen oficial. A continuación se muestran tus resultados y correcciones detalladas.</p>
         </div>
 
         <!-- Grid de Estadísticas del Bloque -->
@@ -466,8 +650,8 @@ class App {
         </div>
 
         ${data.unansweredCount > 0 ? `
-          <div class="text-[11px] text-amber-300 bg-amber-950/40 border border-amber-500/30 p-2.5 rounded-xl">
-            ⚠️ Dejaste ${data.unansweredCount} pregunta(s) sin responder en este bloque.
+          <div class="text-[11px] text-rose-300 bg-rose-950/40 border border-rose-500/30 p-2.5 rounded-xl">
+            ⚠️ Dejaste ${data.unansweredCount} pregunta(s) sin responder (contabilizadas como erróneas).
           </div>
         ` : ''}
 
@@ -475,7 +659,7 @@ class App {
         <div class="pt-4 flex flex-col sm:flex-row items-center justify-center gap-3 border-t border-slate-800">
           <button onclick="app.closeCompletionModal()" class="w-full sm:w-auto flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-5 py-2.5 rounded-xl text-xs transition">
             <i data-lucide="eye" class="w-4 h-4"></i>
-            <span>Revisar Respuestas</span>
+            <span>Revisar Respuestas y Explicaciones</span>
           </button>
           <button onclick="app.closeCompletionModal(); app.navigate('dashboard')" class="w-full sm:w-auto flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold px-5 py-2.5 rounded-xl text-xs border border-slate-700 transition">
             <i data-lucide="layout-dashboard" class="w-4 h-4"></i>
@@ -582,36 +766,252 @@ class App {
   }
 
   forceCorrectAnswer(questionId) {
-    const qId = String(questionId);
-    store.forceCorrect(questionId, "Alineado con consenso de la comunidad");
-
-    // Sincronizar inmediatamente la sesión activa (simulacro o bloque en revisión/curso)
-    if (this.activeSession && this.activeSession.sessionAnswers && this.activeSession.sessionAnswers[qId]) {
-      this.activeSession.sessionAnswers[qId].isCorrect = true;
-      this.activeSession.sessionAnswers[qId].forcedCorrect = true;
-      this.activeSession.sessionAnswers[qId].forcedReason = "Alineado con consenso de la comunidad";
-    }
-
-    if (store.settings.soundEnabled) {
-      this.pomodoro.playTone(880, "sine", 0.12, 0.08);
-    }
-    this.showToast("✓ Marcada como correcta según el consenso de la comunidad.", "success");
-    this.renderTestView();
+    this.openForceAnswerModal(questionId);
   }
 
   revertCorrectAnswer(questionId) {
-    const qId = String(questionId);
-    store.revertToIncorrect(questionId);
+    this.resetForcedAnswer(questionId);
+  }
 
-    // Sincronizar inmediatamente la sesión activa
-    if (this.activeSession && this.activeSession.sessionAnswers && this.activeSession.sessionAnswers[qId]) {
-      this.activeSession.sessionAnswers[qId].isCorrect = false;
-      this.activeSession.sessionAnswers[qId].forcedCorrect = false;
-      delete this.activeSession.sessionAnswers[qId].forcedReason;
+  /**
+   * Abre un modal interactivo para que el usuario pueda elegir qué opción o combinación
+   * considerar correcta (A, B, C, D...), o restaurar al consenso de la comunidad o clave oficial.
+   */
+  openForceAnswerModal(questionId) {
+    const qId = String(questionId);
+    let q = null;
+    if (this.activeSession && this.activeSession.questions) {
+      q = this.activeSession.questions.find(item => String(item.id) === qId);
+    }
+    if (!q) {
+      q = store.questions.find(item => String(item.id) === qId);
+    }
+    if (!q) return;
+
+    const commVote = store.getCommunityVoteAnswer(q);
+    const officialAns = store.getOfficialAnswer(q);
+    const currentEffective = store.getEffectiveCorrectAnswer(q);
+    const hasCustom = store.hasCustomCorrectAnswer(q.id);
+    const isMulti = (q.multiSelectCount || 1) > 1;
+
+    let modal = document.getElementById("force-answer-modal");
+    if (!modal) {
+      modal = document.createElement("div");
+      modal.id = "force-answer-modal";
+      document.body.appendChild(modal);
     }
 
-    this.showToast("Respuesta devuelta a estado de fallo original.", "info");
-    this.renderTestView();
+    const choicesEntries = Object.entries(q.choices || {});
+    let selectedModalLetters = currentEffective.split("");
+
+    const renderModalContent = () => {
+      modal.className = "fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fadeIn";
+      modal.innerHTML = `
+        <div class="bg-slate-900 border border-slate-700 w-full max-w-2xl rounded-2xl shadow-2xl overflow-hidden flex flex-col max-h-[90vh]">
+          
+          <!-- Modal Header -->
+          <div class="p-5 border-b border-slate-800 flex items-center justify-between bg-slate-850">
+            <div class="flex items-center gap-2.5">
+              <span class="p-2 rounded-xl bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                <i data-lucide="sliders" class="w-5 h-5"></i>
+              </span>
+              <div>
+                <h3 class="text-base font-bold text-white tracking-tight">
+                  Elegir / Forzar Respuesta Válida para Q#${q.questionNumber || q.id}
+                </h3>
+                <span class="text-xs text-slate-400">
+                  ${isMulti ? `Selecciona las ${q.multiSelectCount} opciones correctas` : 'Selecciona la opción que debe considerarse correcta'}
+                </span>
+              </div>
+            </div>
+            <button onclick="app.closeForceAnswerModal()" class="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition">
+              <i data-lucide="x" class="w-5 h-5"></i>
+            </button>
+          </div>
+
+          <!-- Modal Body -->
+          <div class="p-5 space-y-4 overflow-y-auto flex-1">
+            
+            <!-- Estado Actual -->
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-2.5 text-xs">
+              <div class="bg-slate-950/80 p-3 rounded-xl border border-slate-800 space-y-1">
+                <span class="text-slate-400 block text-[10px] uppercase font-semibold">Consenso Comunidad:</span>
+                <span class="font-mono font-bold text-emerald-400 text-sm">${commVote || 'N/A'}</span>
+                ${q.communityVote ? `<div class="text-[10px] text-slate-500 truncate">${q.communityVote}</div>` : ''}
+              </div>
+              <div class="bg-slate-950/80 p-3 rounded-xl border border-slate-800 space-y-1">
+                <span class="text-slate-400 block text-[10px] uppercase font-semibold">Clave Oficial Examen:</span>
+                <span class="font-mono font-bold text-slate-200 text-sm">${officialAns}</span>
+                <div class="text-[10px] text-slate-500">Dump / oficial original</div>
+              </div>
+              <div class="bg-slate-950/80 p-3 rounded-xl border ${hasCustom ? 'border-amber-500/50 bg-amber-950/20' : 'border-slate-800'} space-y-1">
+                <span class="text-slate-400 block text-[10px] uppercase font-semibold">Activa en tu Sistema:</span>
+                <div class="flex items-center gap-1.5">
+                  <span class="font-mono font-bold ${hasCustom ? 'text-amber-400' : 'text-emerald-400'} text-sm">${currentEffective}</span>
+                  <span class="text-[9px] px-1.5 py-0.5 rounded ${hasCustom ? 'bg-amber-500/20 text-amber-300' : 'bg-emerald-500/20 text-emerald-300'}">
+                    ${hasCustom ? 'Personalizada' : 'Por Defecto'}
+                  </span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Enunciado corto -->
+            <div class="text-xs text-slate-300 bg-slate-950/50 p-3 rounded-xl border border-slate-800/80">
+              <strong class="text-slate-400 block mb-1">Enunciado:</strong>
+              <p class="line-clamp-2">${q.question}</p>
+            </div>
+
+            <!-- Opciones Interactivas -->
+            <div class="space-y-2">
+              <label class="text-xs font-semibold text-slate-300 block">Elige la opción o combinación que consideras correcta:</label>
+              ${choicesEntries.map(([letter, text]) => {
+                const isChecked = selectedModalLetters.includes(letter);
+                const isComm = commVote && commVote.includes(letter);
+                const isOff = officialAns && officialAns.includes(letter);
+
+                return `
+                  <div onclick="app.toggleModalLetter('${letter}', ${isMulti})" class="flex items-start gap-3 p-3 rounded-xl border ${isChecked ? 'border-amber-500/60 bg-amber-950/30 ring-1 ring-amber-500/40' : 'border-slate-800 bg-slate-950/60 hover:bg-slate-800/50'} cursor-pointer transition">
+                    <div class="w-5 h-5 rounded-md flex items-center justify-center font-mono text-xs font-bold ${isChecked ? 'bg-amber-500 text-slate-950' : 'bg-slate-800 text-slate-300'} mt-0.5">
+                      ${letter}
+                    </div>
+                    <div class="flex-1 text-xs text-slate-200 leading-relaxed">
+                      ${text}
+                      <div class="flex items-center gap-2 mt-1.5">
+                        ${isComm ? '<span class="text-[10px] text-emerald-400 bg-emerald-950/80 border border-emerald-500/30 px-1.5 py-0.5 rounded font-mono">Consenso Comunidad</span>' : ''}
+                        ${isOff ? '<span class="text-[10px] text-slate-400 bg-slate-800 border border-slate-700 px-1.5 py-0.5 rounded font-mono">Clave Oficial</span>' : ''}
+                      </div>
+                    </div>
+                    ${isChecked ? '<i data-lucide="check" class="w-4 h-4 text-amber-400 flex-shrink-0 mt-1"></i>' : ''}
+                  </div>
+                `;
+              }).join("")}
+            </div>
+
+          </div>
+
+          <!-- Modal Footer / Acciones Rápidas -->
+          <div class="p-4 bg-slate-950 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3">
+            <div class="flex items-center gap-2">
+              ${commVote ? `
+                <button onclick="app.applyModalAnswer('${q.id}', '${commVote}')" class="text-xs bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 px-3 py-1.5 rounded-xl font-semibold transition">
+                  Usar Comunidad (${commVote})
+                </button>
+              ` : ''}
+              <button onclick="app.applyModalAnswer('${q.id}', '${officialAns}')" class="text-xs bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-3 py-1.5 rounded-xl font-semibold transition">
+                Usar Oficial (${officialAns})
+              </button>
+              ${hasCustom ? `
+                <button onclick="app.resetForcedAnswer('${q.id}')" class="text-xs text-rose-400 hover:text-rose-300 underline px-2 py-1">
+                  Restablecer
+                </button>
+              ` : ''}
+            </div>
+
+            <div class="flex items-center gap-2">
+              <button onclick="app.closeForceAnswerModal()" class="text-xs text-slate-400 hover:text-white px-3 py-2 rounded-xl transition">
+                Cancelar
+              </button>
+              <button onclick="app.saveCustomModalSelection('${q.id}')" class="text-xs bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold px-4 py-2 rounded-xl transition shadow-md flex items-center gap-1.5">
+                <i data-lucide="check-check" class="w-4 h-4"></i>
+                <span>Aplicar Selección</span>
+              </button>
+            </div>
+          </div>
+
+        </div>
+      `;
+      if (window.lucide) window.lucide.createIcons();
+    };
+
+    this._modalSelectedLetters = selectedModalLetters;
+    this._modalQuestion = q;
+    this._modalIsMulti = isMulti;
+    this._renderModalContent = renderModalContent;
+    renderModalContent();
+  }
+
+  toggleModalLetter(letter, isMulti) {
+    if (!this._modalSelectedLetters) this._modalSelectedLetters = [];
+    if (!isMulti) {
+      this._modalSelectedLetters = [letter];
+    } else {
+      if (this._modalSelectedLetters.includes(letter)) {
+        this._modalSelectedLetters = this._modalSelectedLetters.filter(l => l !== letter);
+      } else {
+        this._modalSelectedLetters.push(letter);
+      }
+    }
+    if (this._renderModalContent) this._renderModalContent();
+  }
+
+  saveCustomModalSelection(questionId) {
+    const letters = (this._modalSelectedLetters || []).sort().join("");
+    if (!letters) {
+      this.showToast("Selecciona al menos una opción.", "warning");
+      return;
+    }
+    this.applyModalAnswer(questionId, letters);
+  }
+
+  applyModalAnswer(questionId, letters) {
+    const qId = String(questionId);
+    store.setCustomCorrectAnswer(qId, letters, "Selección manual del usuario");
+
+    // Sincronizar sesión activa si está abierta
+    if (this.activeSession && this.activeSession.sessionAnswers && this.activeSession.sessionAnswers[qId]) {
+      const q = (this.activeSession.questions || []).find(item => String(item.id) === qId);
+      const effective = q ? store.getEffectiveCorrectAnswer(q) : letters;
+      const userSelectedSorted = [...(this.activeSession.sessionAnswers[qId].selected || [])].sort().join("");
+      this.activeSession.sessionAnswers[qId].isCorrect = userSelectedSorted === effective;
+      this.activeSession.sessionAnswers[qId].forcedCorrect = true;
+    }
+
+    if (store.settings.soundEnabled && this.pomodoro) {
+      this.pomodoro.playTone(880, "sine", 0.12, 0.08);
+    }
+    this.showToast(`✓ Respuesta válida establecida como: ${letters}`, "success");
+    this.closeForceAnswerModal();
+    if (this.currentView === "test") {
+      this.renderTestView();
+    } else if (this.currentView === "failures") {
+      this.renderFailuresView();
+    } else {
+      this.render();
+    }
+  }
+
+  resetForcedAnswer(questionId) {
+    const qId = String(questionId);
+    store.resetCustomCorrectAnswer(questionId);
+
+    // Sincronizar sesión activa
+    if (this.activeSession && this.activeSession.sessionAnswers && this.activeSession.sessionAnswers[qId]) {
+      const q = (this.activeSession.questions || []).find(item => String(item.id) === qId);
+      const effective = q ? store.getEffectiveCorrectAnswer(q) : "";
+      const userSelectedSorted = [...(this.activeSession.sessionAnswers[qId].selected || [])].sort().join("");
+      this.activeSession.sessionAnswers[qId].isCorrect = userSelectedSorted === effective;
+      delete this.activeSession.sessionAnswers[qId].forcedCorrect;
+    }
+
+    this.showToast("Respuesta restablecida al consenso por defecto.", "info");
+    this.closeForceAnswerModal();
+    if (this.currentView === "test") {
+      this.renderTestView();
+    } else if (this.currentView === "failures") {
+      this.renderFailuresView();
+    } else {
+      this.render();
+    }
+  }
+
+  closeForceAnswerModal() {
+    const modal = document.getElementById("force-answer-modal");
+    if (modal) {
+      modal.remove();
+    }
+    this._modalSelectedLetters = null;
+    this._modalQuestion = null;
+    this._renderModalContent = null;
   }
 
   // =========================================================================
@@ -1015,14 +1415,18 @@ function doPost(e) {
     }
   }
 
+  renderFocusWidget(data) {
+    return this.renderPomodoroWidget(data);
+  }
+
   renderPomodoroWidget(data) {
-    const el = document.getElementById("pomodoro-display");
+    const el = document.getElementById("focus-display") || document.getElementById("pomodoro-display");
     if (el) {
       const modeLabel = data.mode === "focus" ? "Foco Intenso" : "Descanso";
       const playIcon = data.isRunning ? "pause" : "play";
 
       el.innerHTML = `
-        <div class="flex items-center gap-2 sm:gap-3 bg-slate-900/80 backdrop-blur border border-slate-800 rounded-xl px-3 py-1.5 shadow-lg ${data.isRunning && data.mode === 'focus' ? 'pomodoro-active-pulse' : ''}">
+        <div class="flex items-center gap-2 sm:gap-3 bg-slate-900/80 backdrop-blur border border-slate-800 rounded-xl px-3 py-1.5 shadow-lg ${data.isRunning && data.mode === 'focus' ? 'focus-active-pulse' : ''}">
           <div class="flex flex-col">
             <div class="flex items-center gap-1.5">
               <span class="inline-block w-2 h-2 rounded-full ${data.isRunning ? 'bg-emerald-400 animate-pulse' : 'bg-slate-500'}"></span>
@@ -1042,16 +1446,16 @@ function doPost(e) {
       `;
     }
 
-    const testPomoBtn = document.getElementById("test-pomo-btn");
-    if (testPomoBtn) {
-      testPomoBtn.innerHTML = `
+    const testFocusBtn = document.getElementById("test-focus-btn") || document.getElementById("test-pomo-btn");
+    if (testFocusBtn) {
+      testFocusBtn.innerHTML = `
         <i data-lucide="${data.isRunning ? 'pause' : 'play'}" class="w-3.5 h-3.5 ${data.isRunning ? 'text-indigo-400' : ''}"></i>
         <span class="font-mono text-xs font-bold">${data.formatted}</span>
         <span class="hidden xl:inline text-[10px] uppercase font-semibold text-slate-400 ml-0.5">${data.mode === 'focus' ? 'Foco' : 'Descanso'}</span>
         <span class="key-badge ml-1 hidden lg:inline-flex">T</span>
       `;
-      testPomoBtn.className = `flex items-center gap-1.5 text-xs font-semibold py-1.5 px-2.5 rounded-lg border transition ${data.isRunning ? 'bg-indigo-600/30 text-indigo-300 border-indigo-500/50 pomodoro-active-pulse' : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200'}`;
-      testPomoBtn.title = `${data.isRunning ? 'Pausar Foco Intenso' : 'Activar Foco Intenso Manualmente'} [T]`;
+      testFocusBtn.className = `flex items-center gap-1.5 text-xs font-semibold py-1.5 px-2.5 rounded-lg border transition ${data.isRunning ? 'bg-indigo-600/30 text-indigo-300 border-indigo-500/50 focus-active-pulse' : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200'}`;
+      testFocusBtn.title = `${data.isRunning ? 'Pausar Foco Intenso' : 'Activar Foco Intenso Manualmente'} [T]`;
     }
 
     if (window.lucide) window.lucide.createIcons();
@@ -1081,7 +1485,7 @@ function doPost(e) {
               Plataforma de Entrenamiento Intensivo <span class="text-indigo-400 font-mono">SAP-C02</span>
             </h1>
             <p class="text-slate-400 text-sm mt-1">
-              Bloques cerrados de 25 preguntas, feedback de descarte inmediato y repetición espaciada 24h.
+              Simulacros de examen en bloques de 25 preguntas, corrección al finalizar y repetición espaciada 24h.
             </p>
           </div>
 
@@ -1238,8 +1642,8 @@ function doPost(e) {
           <!-- Barra de Progreso del Bloque -->
           <div class="space-y-1 mb-3">
             <div class="flex justify-between text-[11px] text-slate-400">
-              <span>Progreso: ${b.answered}/${b.total}</span>
-              <span class="font-semibold ${b.accuracy >= 75 ? 'text-emerald-400' : 'text-amber-400'}">${b.accuracy}% acierto</span>
+              <span>${b.status === 'completed' ? `Finalizado: ${b.answered}/${b.total}` : (b.status === 'in_progress' ? `En examen: ${b.answered}/${b.total}` : `Sin iniciar (${b.total} preguntas)`)}</span>
+              ${b.status === 'completed' ? `<span class="font-semibold ${b.accuracy >= 75 ? 'text-emerald-400' : 'text-amber-400'}">${b.accuracy}% acierto (Neto: ${b.netScore})</span>` : `<span class="text-slate-500">Modo Examen</span>`}
             </div>
             <div class="w-full bg-slate-800 h-1.5 rounded-full overflow-hidden">
               <div class="bg-indigo-500 h-full rounded-full transition-all duration-500" style="width: ${(b.answered / (b.total || 1)) * 100}%"></div>
@@ -1250,11 +1654,11 @@ function doPost(e) {
         <div class="flex items-center gap-2 pt-2 border-t border-slate-800/80">
           <button onclick="app.startBlockSession(${b.blockNumber})" class="flex-1 flex items-center justify-center gap-1.5 ${b.status === 'completed' ? 'bg-emerald-600 hover:bg-emerald-500' : 'bg-indigo-600 hover:bg-indigo-500'} text-white py-2 px-3 rounded-xl text-xs font-semibold transition shadow-sm">
             <i data-lucide="${b.status === 'completed' ? 'eye' : 'play'}" class="w-3.5 h-3.5"></i>
-            <span>${b.status === 'completed' ? 'Revisar Respuestas' : (b.status === 'in_progress' ? 'Continuar' : 'Comenzar')}</span>
+            <span>${b.status === 'completed' ? 'Revisar Respuestas' : (b.status === 'in_progress' ? 'Continuar Examen' : 'Comenzar Examen')}</span>
           </button>
 
-          ${b.answered > 0 ? `
-            <button onclick="app.confirmResetBlock(${b.blockNumber})" class="p-2 rounded-xl bg-slate-800 hover:bg-rose-950/50 text-slate-400 hover:text-rose-400 border border-slate-700/60 hover:border-rose-900/60 transition" title="Reiniciar Bloque (Borrar respuestas)">
+          ${(b.status === 'completed' || b.answered > 0) ? `
+            <button onclick="app.confirmResetBlock(${b.blockNumber})" class="p-2 rounded-xl bg-slate-800 hover:bg-rose-950/50 text-slate-400 hover:text-rose-400 border border-slate-700/60 hover:border-rose-900/60 transition" title="Reiniciar Bloque (Borrar respuestas y repetir examen)">
               <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i>
             </button>
           ` : ''}
@@ -1278,10 +1682,15 @@ function doPost(e) {
     const q = this.activeSession.questions[this.activeSession.currentIndex];
     const totalQ = this.activeSession.questions.length;
     const qId = String(q.id);
+    const isBlock = this.activeSession.type === "block";
+    const isExam = isBlock && this.activeSession.mode === "exam";
+    const isReview = isBlock && this.activeSession.mode === "review";
+    const isRecall = this.activeSession.type === "recall_24h";
+
     const sessionAns = this.activeSession.sessionAnswers ? this.activeSession.sessionAnswers[qId] : null;
-    const isAnswered = !!sessionAns;
     const existingAnswer = sessionAns;
     const answeredSelected = sessionAns ? (sessionAns.selected || []) : [];
+    const isGraded = !isExam && sessionAns && typeof sessionAns.isCorrect === "boolean";
     const isDoubt = store.isDoubt(q.id);
     const userMnemonic = store.getMnemonic(q.id);
 
@@ -1290,10 +1699,14 @@ function doPost(e) {
 
     // Preparar opciones A, B, C, D, etc.
     const choicesEntries = Object.entries(q.choices || {});
-    const correctLetters = (q.correctAnswer || "").split("");
+    const effectiveCorrect = store.getEffectiveCorrectAnswer(q);
+    const effectiveCorrectLetters = (effectiveCorrect || "").split("");
+    const hasCustomOverride = store.hasCustomCorrectAnswer(q.id);
+    const commVoteAns = store.getCommunityVoteAnswer(q);
+    const officialAns = store.getOfficialAnswer(q);
 
     container.innerHTML = `
-      <div class="max-w-4xl mx-auto space-y-6 pb-20 animate-fadeIn">
+      <div class="max-w-4xl mx-auto space-y-4 pb-20 animate-fadeIn">
         
         <!-- Barra de Control del Test (Header Zen) -->
         <div class="flex items-center justify-between bg-slate-900/90 border border-slate-800 p-3 rounded-2xl shadow-lg sticky top-3 z-30 backdrop-blur">
@@ -1304,7 +1717,11 @@ function doPost(e) {
             </button>
 
             <div class="flex flex-col">
-              <span class="text-xs font-bold text-white tracking-tight">${this.activeSession.title}</span>
+              <div class="flex items-center gap-2">
+                <span class="text-xs font-bold text-white tracking-tight">${this.activeSession.title}</span>
+                ${isExam ? `<span class="bg-indigo-500/20 text-indigo-300 border border-indigo-500/30 text-[9px] font-mono font-bold px-1.5 py-0.5 rounded uppercase">Examen en Curso</span>` : ''}
+                ${isReview ? `<span class="bg-emerald-500/20 text-emerald-300 border border-emerald-500/30 text-[9px] font-mono font-bold px-1.5 py-0.5 rounded uppercase">Modo Revisión</span>` : ''}
+              </div>
               <span class="text-[11px] text-slate-400">Pregunta ${this.activeSession.currentIndex + 1} de ${totalQ} ${requiredChoicesText}</span>
             </div>
           </div>
@@ -1317,29 +1734,38 @@ function doPost(e) {
               <span class="key-badge ml-1 hidden md:inline-flex">D</span>
             </button>
 
-            <!-- Botón Ver Repemill del Bloque -->
-            <button onclick="app.openRepemillModal(${q.blockNumber})" class="flex items-center gap-1 text-xs font-semibold py-1.5 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-indigo-400 border border-slate-700 transition" title="Patrones del Bloque">
-              <i data-lucide="book-open" class="w-3.5 h-3.5"></i>
-              <span class="hidden md:inline">Repemill</span>
-            </button>
+            <!-- Botón Ver Repemill del Bloque (Solo en Revisión o Recall) -->
+            ${!isExam ? `
+              <button onclick="app.openRepemillModal(${q.blockNumber})" class="flex items-center gap-1 text-xs font-semibold py-1.5 px-2.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-indigo-400 border border-slate-700 transition" title="Patrones del Bloque">
+                <i data-lucide="book-open" class="w-3.5 h-3.5"></i>
+                <span class="hidden md:inline">Repemill</span>
+              </button>
+            ` : ''}
 
-            <!-- Botón Finalizar Bloque / Simulacro -->
-            <button onclick="app.requestFinishSession()" class="flex items-center gap-1.5 text-xs font-bold py-1.5 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition" title="Finalizar Sesión y ver Resumen">
-              <i data-lucide="check-square" class="w-3.5 h-3.5"></i>
-              <span class="hidden sm:inline">Finalizar</span>
-              <span>${this.activeSession.type === 'recall_24h' ? 'Simulacro' : 'Bloque'}</span>
-            </button>
+            <!-- Botón Finalizar / Salir -->
+            ${isReview ? `
+              <button onclick="app.navigate('dashboard')" class="flex items-center gap-1.5 text-xs font-bold py-1.5 px-3 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 transition" title="Volver al Dashboard">
+                <i data-lucide="layout-dashboard" class="w-3.5 h-3.5"></i>
+                <span class="hidden sm:inline">Dashboard</span>
+              </button>
+            ` : `
+              <button onclick="app.requestFinishSession()" class="flex items-center gap-1.5 text-xs font-bold py-1.5 px-3 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-white shadow-sm transition" title="Finalizar Sesión y ver Resultados">
+                <i data-lucide="check-square" class="w-3.5 h-3.5"></i>
+                <span class="hidden sm:inline">Finalizar</span>
+                <span>${isRecall ? 'Simulacro' : 'Examen'}</span>
+              </button>
+            `}
 
             <!-- Botón Reiniciar Bloque en Curso -->
-            ${this.activeSession.type === 'block' ? `
-              <button onclick="app.confirmResetBlock(${this.activeSession.blockNumber})" class="flex items-center gap-1 text-xs font-semibold py-1.5 px-2.5 rounded-lg bg-slate-800 hover:bg-rose-950/60 text-slate-400 hover:text-rose-300 border border-slate-700 transition" title="Reiniciar este Bloque">
+            ${isBlock ? `
+              <button onclick="app.confirmResetBlock(${this.activeSession.blockNumber})" class="flex items-center gap-1 text-xs font-semibold py-1.5 px-2.5 rounded-lg bg-slate-800 hover:bg-rose-950/60 text-slate-400 hover:text-rose-300 border border-slate-700 transition" title="Reiniciar este Bloque desde cero">
                 <i data-lucide="rotate-ccw" class="w-3.5 h-3.5"></i>
                 <span class="hidden lg:inline">Reiniciar</span>
               </button>
             ` : ''}
 
             <!-- Botón Foco Intenso (Manual) -->
-            <button id="test-pomo-btn" onclick="app.pomodoro.toggle()" class="flex items-center gap-1.5 text-xs font-semibold py-1.5 px-2.5 rounded-lg border transition ${this.pomodoro.isRunning ? 'bg-indigo-600/30 text-indigo-300 border-indigo-500/50 pomodoro-active-pulse' : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200'}" title="${this.pomodoro.isRunning ? 'Pausar Foco Intenso' : 'Activar Foco Intenso Manualmente'} [T]">
+            <button id="test-focus-btn" onclick="app.pomodoro.toggle()" class="flex items-center gap-1.5 text-xs font-semibold py-1.5 px-2.5 rounded-lg border transition ${this.pomodoro.isRunning ? 'bg-indigo-600/30 text-indigo-300 border-indigo-500/50 focus-active-pulse' : 'bg-slate-800 text-slate-400 border-slate-700 hover:text-slate-200'}" title="${this.pomodoro.isRunning ? 'Pausar Foco Intenso' : 'Activar Foco Intenso Manualmente'} [T]">
               <i data-lucide="${this.pomodoro.isRunning ? 'pause' : 'play'}" class="w-3.5 h-3.5 ${this.pomodoro.isRunning ? 'text-indigo-400' : ''}"></i>
               <span class="font-mono text-xs font-bold">${this.pomodoro.getTimeData().formatted}</span>
               <span class="hidden xl:inline text-[10px] uppercase font-semibold text-slate-400 ml-0.5">${this.pomodoro.getTimeData().mode === 'focus' ? 'Foco' : 'Descanso'}</span>
@@ -1353,24 +1779,33 @@ function doPost(e) {
           </div>
         </div>
 
-        <!-- Matriz Rápida de Preguntas del Bloque / Simulacro -->
-        <div class="flex items-center gap-1.5 overflow-x-auto py-1 px-0.5 no-scrollbar">
-          ${this.activeSession.questions.map((item, idx) => {
-            const itemAns = this.activeSession.sessionAnswers ? this.activeSession.sessionAnswers[String(item.id)] : null;
-            let color = "bg-slate-800 text-slate-400 hover:bg-slate-700";
-            if (itemAns) {
-              color = itemAns.isCorrect ? "bg-emerald-600 text-white" : "bg-rose-600 text-white";
-            }
-            if (store.isDoubt(item.id)) {
-              color = "bg-amber-500 text-slate-950 font-black ring-2 ring-amber-400/50";
-            }
-            const isCurrent = idx === this.activeSession.currentIndex;
-            return `
-              <button onclick="app.jumpToQuestion(${idx})" class="w-7 h-7 flex-shrink-0 text-[11px] font-mono font-bold rounded-lg transition ${color} ${isCurrent ? 'ring-2 ring-indigo-400 scale-110' : ''}">
-                ${idx + 1}
-              </button>
-            `;
-          }).join("")}
+        <!-- Selector Compacto de Preguntas (Números pequeños centrados) -->
+        <div class="flex items-center justify-center">
+          <div class="inline-flex flex-wrap items-center justify-center gap-1 bg-slate-900/80 border border-slate-800/80 px-2 py-1 rounded-xl shadow-sm max-w-full">
+            ${this.activeSession.questions.map((item, idx) => {
+              const itemAns = this.activeSession.sessionAnswers ? this.activeSession.sessionAnswers[String(item.id)] : null;
+              const itemIsAnswered = itemAns && itemAns.selected && itemAns.selected.length > 0;
+              const itemDoubt = store.isDoubt(item.id);
+              const isCurrent = idx === this.activeSession.currentIndex;
+
+              let dotColor = "bg-slate-800/80 text-slate-400 border-slate-700 hover:text-white hover:bg-slate-700";
+              if (isExam) {
+                if (itemDoubt) dotColor = "bg-amber-500/30 border-amber-500/70 text-amber-200 ring-1 ring-amber-400/40";
+                else if (itemIsAnswered) dotColor = "bg-indigo-600/80 border-indigo-500 text-white font-bold";
+              } else if (itemAns) {
+                if (itemAns.isCorrect) dotColor = "bg-emerald-600/80 border-emerald-500 text-white font-bold";
+                else dotColor = "bg-rose-600/80 border-rose-500 text-white font-bold";
+              } else if (itemDoubt) {
+                dotColor = "bg-amber-500/30 border-amber-500/60 text-amber-300";
+              }
+
+              return `
+                <button onclick="app.jumpToQuestion(${idx})" class="w-6 h-6 rounded-md text-[10px] font-mono flex items-center justify-center border transition-all ${dotColor} ${isCurrent ? 'ring-2 ring-indigo-400 scale-110 z-10 font-bold bg-indigo-700 border-indigo-400 text-white shadow-sm' : ''}" title="Ir a pregunta ${idx + 1} ${itemAns && itemAns.unanswered ? '(Sin responder - Errónea)' : (itemDoubt ? '(Dudosa)' : '')}">
+                  ${idx + 1}
+                </button>
+              `;
+            }).join("")}
+          </div>
         </div>
 
         <!-- Tarjeta Central de la Pregunta (Mesa de Estudio Limpia) -->
@@ -1380,7 +1815,7 @@ function doPost(e) {
           <div class="flex items-center justify-between text-xs text-slate-400 pb-3 border-b border-slate-800/80">
             <span class="font-mono font-bold text-indigo-400 uppercase tracking-wider">Identificador: Q#${q.questionNumber}</span>
             <div class="flex items-center gap-2">
-              ${isAnswered && q.communityVote ? `<span class="bg-slate-800 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded text-[11px] font-mono">Comunidad: ${q.communityVote}</span>` : ''}
+              ${!isExam && q.communityVote ? `<span class="bg-slate-800 text-emerald-400 border border-emerald-500/30 px-2 py-0.5 rounded text-[11px] font-mono">Comunidad: ${q.communityVote}</span>` : ''}
               <span class="bg-slate-800 text-slate-300 px-2 py-0.5 rounded text-[11px] font-mono">Bloque ${q.blockNumber}</span>
             </div>
           </div>
@@ -1392,18 +1827,17 @@ function doPost(e) {
 
           <!-- Opciones de Respuesta A, B, C, D... -->
           <div class="space-y-3 pt-2">
-            ${choicesEntries.map(([letter, text], index) => {
-              const isSelected = isAnswered
+            ${choicesEntries.map(([letter, text]) => {
+              const isSelected = isGraded
                 ? answeredSelected.includes(letter)
                 : this.activeSession.userSelected.includes(letter);
-              const isOfficialCorrect = correctLetters.includes(letter);
-              const isForced = isAnswered && existingAnswer && existingAnswer.forcedCorrect && isSelected;
+              const isEffectiveCorrect = effectiveCorrectLetters.includes(letter);
               let optionClass = "border-slate-800 bg-slate-800/40 hover:bg-slate-800/90 hover:border-slate-700 text-slate-200";
 
-              if (isAnswered) {
-                if (isOfficialCorrect || isForced) {
+              if (isGraded) {
+                if (isEffectiveCorrect) {
                   optionClass = "border-emerald-500/70 bg-emerald-950/40 text-emerald-100 ring-1 ring-emerald-500/50";
-                } else if (isSelected && !isOfficialCorrect) {
+                } else if (isSelected && !isEffectiveCorrect) {
                   optionClass = "border-rose-500/70 bg-rose-950/40 text-rose-100 ring-1 ring-rose-500/50";
                 } else {
                   optionClass = "border-slate-800/50 bg-slate-900/30 text-slate-400 opacity-60";
@@ -1413,23 +1847,23 @@ function doPost(e) {
               }
 
               const badgeColor = isSelected
-                ? (isAnswered && (isOfficialCorrect || isForced) ? 'bg-emerald-600 text-white' : (isAnswered && !isOfficialCorrect ? 'bg-rose-600 text-white' : 'bg-indigo-600 text-white'))
-                : 'bg-slate-800 text-slate-300 border border-slate-700';
+                ? (isGraded && isEffectiveCorrect ? 'bg-emerald-600 text-white' : (isGraded && !isEffectiveCorrect ? 'bg-rose-600 text-white' : 'bg-indigo-600 text-white'))
+                : (isGraded && isEffectiveCorrect ? 'bg-emerald-900/80 text-emerald-300 border border-emerald-600/50' : 'bg-slate-800 text-slate-300 border border-slate-700');
 
               return `
-                <div onclick="app.toggleOptionSelection('${letter}')" class="flex items-start gap-4 p-4 rounded-2xl border ${optionClass} ${isAnswered ? 'cursor-default' : 'cursor-pointer'} transition-all">
-                  <div class="flex items-center gap-2 pt-0.5">
+                <div onclick="app.toggleOptionSelection('${letter}')" class="flex items-start gap-4 p-4 rounded-2xl border ${optionClass} ${isReview ? 'cursor-default' : 'cursor-pointer'} transition-all">
+                  <div class="flex-shrink-0 pt-0.5">
                     <span class="w-6 h-6 rounded-lg flex items-center justify-center font-mono text-xs font-bold ${badgeColor}">
                       ${letter}
                     </span>
-                    <span class="key-badge text-[10px] hidden sm:inline-flex">${index + 1}</span>
                   </div>
                   <div class="flex-1 text-sm sm:text-base leading-relaxed">
                     ${Highlighter.highlight(text)}
-                    ${isForced ? '<span class="ml-2 inline-flex items-center gap-1 text-[11px] text-emerald-400 font-semibold bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-500/40">✓ Acierto validado por comunidad</span>' : ''}
+                    ${isGraded && isEffectiveCorrect && hasCustomOverride ? '<span class="ml-2 inline-flex items-center gap-1 text-[11px] text-amber-400 font-semibold bg-amber-950/80 px-2 py-0.5 rounded border border-amber-500/40">✓ Respuesta personalizada activa</span>' : ''}
+                    ${isGraded && isEffectiveCorrect && !hasCustomOverride && commVoteAns && commVoteAns !== officialAns ? '<span class="ml-2 inline-flex items-center gap-1 text-[11px] text-emerald-400 font-semibold bg-emerald-950/80 px-2 py-0.5 rounded border border-emerald-500/40">✓ Consenso comunidad</span>' : ''}
                   </div>
-                  ${isAnswered && (isOfficialCorrect || isForced) ? '<i data-lucide="check-circle" class="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5"></i>' : ''}
-                  ${isAnswered && isSelected && !isOfficialCorrect && !isForced ? '<i data-lucide="x-circle" class="w-5 h-5 text-rose-400 flex-shrink-0 mt-0.5"></i>' : ''}
+                  ${isGraded && isEffectiveCorrect ? '<i data-lucide="check-circle" class="w-5 h-5 text-emerald-400 flex-shrink-0 mt-0.5"></i>' : ''}
+                  ${isGraded && isSelected && !isEffectiveCorrect ? '<i data-lucide="x-circle" class="w-5 h-5 text-rose-400 flex-shrink-0 mt-0.5"></i>' : ''}
                 </div>
               `;
             }).join("")}
@@ -1438,7 +1872,7 @@ function doPost(e) {
           <!-- Botón de Confirmación / Avance / Finalizar -->
           <div class="pt-4 flex flex-col sm:flex-row items-center justify-between gap-4 border-t border-slate-800">
             <div class="text-xs text-slate-400 flex items-center gap-2">
-              <span class="key-badge">Espacio</span> o <span class="key-badge">Enter</span> para confirmar/avanzar
+              <span class="key-badge">Espacio</span> o <span class="key-badge">Enter</span> para avanzar
               <span class="key-badge">←</span> <span class="key-badge">→</span> navegar
             </div>
 
@@ -1450,12 +1884,7 @@ function doPost(e) {
                 </button>
               ` : ''}
 
-              ${!isAnswered ? `
-                <button onclick="app.confirmAnswer()" ${this.activeSession.userSelected.length === 0 ? 'disabled' : ''} class="flex-1 sm:flex-initial flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:hover:bg-indigo-600 text-white font-semibold px-6 py-2.5 rounded-xl text-sm transition shadow-lg shadow-indigo-900/30">
-                  <span>Confirmar Respuesta</span>
-                  <i data-lucide="check" class="w-4 h-4"></i>
-                </button>
-              ` : `
+              ${isExam ? `
                 ${this.activeSession.currentIndex < totalQ - 1 ? `
                   <button onclick="app.nextQuestion()" class="flex-1 sm:flex-initial flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-6 py-2.5 rounded-xl text-sm transition shadow-lg shadow-indigo-900/30">
                     <span>Siguiente Pregunta</span>
@@ -1463,21 +1892,60 @@ function doPost(e) {
                   </button>
                 ` : `
                   <button onclick="app.requestFinishSession()" class="flex-1 sm:flex-initial flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-6 py-2.5 rounded-xl text-sm transition shadow-lg shadow-emerald-900/30">
-                    <i data-lucide="check-circle-2" class="w-4 h-4"></i>
-                    <span>Finalizar ${this.activeSession.type === 'recall_24h' ? 'Simulacro' : 'Bloque'}</span>
+                    <i data-lucide="check-square" class="w-4 h-4"></i>
+                    <span>Finalizar Examen</span>
                   </button>
                 `}
-              `}
-
-              <button onclick="app.requestFinishSession()" class="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition" title="Finalizar Sesión">
-                <i data-lucide="flag" class="w-3.5 h-3.5 text-amber-400"></i>
-                <span class="hidden sm:inline">Finalizar</span>
-              </button>
+                <button onclick="app.requestFinishSession()" class="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition" title="Finalizar Examen y ver corrección">
+                  <i data-lucide="flag" class="w-3.5 h-3.5 text-amber-400"></i>
+                  <span class="hidden sm:inline">Finalizar</span>
+                </button>
+              ` : (isReview ? `
+                ${this.activeSession.currentIndex < totalQ - 1 ? `
+                  <button onclick="app.nextQuestion()" class="flex-1 sm:flex-initial flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-6 py-2.5 rounded-xl text-sm transition shadow-lg shadow-indigo-900/30">
+                    <span>Siguiente Pregunta</span>
+                    <i data-lucide="arrow-right" class="w-4 h-4"></i>
+                  </button>
+                ` : `
+                  <button onclick="app.navigate('dashboard')" class="flex-1 sm:flex-initial flex items-center justify-center gap-2 bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold px-6 py-2.5 rounded-xl text-sm transition border border-slate-700">
+                    <i data-lucide="layout-dashboard" class="w-4 h-4"></i>
+                    <span>Volver al Dashboard</span>
+                  </button>
+                `}
+                <button onclick="app.navigate('dashboard')" class="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition" title="Volver al Dashboard">
+                  <i data-lucide="layout-dashboard" class="w-3.5 h-3.5"></i>
+                  <span class="hidden sm:inline">Dashboard</span>
+                </button>
+              ` : `
+                <!-- Recall 24h -->
+                ${!isGraded ? `
+                  <button onclick="app.confirmAnswer()" ${this.activeSession.userSelected.length === 0 ? 'disabled' : ''} class="flex-1 sm:flex-initial flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 disabled:opacity-40 disabled:hover:bg-indigo-600 text-white font-semibold px-6 py-2.5 rounded-xl text-sm transition shadow-lg shadow-indigo-900/30">
+                    <span>Confirmar Respuesta</span>
+                    <i data-lucide="check" class="w-4 h-4"></i>
+                  </button>
+                ` : `
+                  ${this.activeSession.currentIndex < totalQ - 1 ? `
+                    <button onclick="app.nextQuestion()" class="flex-1 sm:flex-initial flex items-center justify-center gap-2 bg-indigo-600 hover:bg-indigo-500 text-white font-semibold px-6 py-2.5 rounded-xl text-sm transition shadow-lg shadow-indigo-900/30">
+                      <span>Siguiente Pregunta</span>
+                      <i data-lucide="arrow-right" class="w-4 h-4"></i>
+                    </button>
+                  ` : `
+                    <button onclick="app.requestFinishSession()" class="flex-1 sm:flex-initial flex items-center justify-center gap-2 bg-emerald-600 hover:bg-emerald-500 text-white font-semibold px-6 py-2.5 rounded-xl text-sm transition shadow-lg shadow-emerald-900/30">
+                      <i data-lucide="check-circle-2" class="w-4 h-4"></i>
+                      <span>Finalizar Simulacro</span>
+                    </button>
+                  `}
+                `}
+                <button onclick="app.requestFinishSession()" class="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-300 border border-slate-700 px-3.5 py-2.5 rounded-xl text-xs font-semibold transition" title="Finalizar Sesión">
+                  <i data-lucide="flag" class="w-3.5 h-3.5 text-amber-400"></i>
+                  <span class="hidden sm:inline">Finalizar</span>
+                </button>
+              `)}
             </div>
           </div>
 
-          <!-- Desplegable Técnico de Descarte & Nemotecnia (Active Recall Feedback) -->
-          ${isAnswered ? this.renderAnswerFeedback(q, existingAnswer, userMnemonic) : ''}
+          <!-- Desplegable Técnico de Descarte & Nemotecnia (Solo en Modo Revisión o Recall Corregido) -->
+          ${isGraded ? this.renderAnswerFeedback(q, existingAnswer, userMnemonic) : ''}
 
         </div>
 
@@ -1489,10 +1957,10 @@ function doPost(e) {
 
   renderAnswerFeedback(q, answer, userMnemonic) {
     const isCorrect = answer.isCorrect;
-    const isForced = !!answer.forcedCorrect;
-    const repemillPattern = (typeof findBestPatternForQuestion === 'function') 
-      ? findBestPatternForQuestion(q) 
-      : ((REPEMILL_DATA[q.blockNumber] && REPEMILL_DATA[q.blockNumber].patterns[0]) || null);
+    const effectiveCorrect = store.getEffectiveCorrectAnswer(q);
+    const hasCustomOverride = store.hasCustomCorrectAnswer(q.id);
+    const commVoteAns = store.getCommunityVoteAnswer(q);
+    const officialAns = store.getOfficialAnswer(q);
 
     return `
       <div class="mt-6 p-5 sm:p-6 rounded-2xl border ${isCorrect ? 'border-emerald-500/40 bg-emerald-950/20' : 'border-rose-500/40 bg-rose-950/20'} space-y-5 animate-fadeIn">
@@ -1503,101 +1971,81 @@ function doPost(e) {
             <span class="w-3.5 h-3.5 rounded-full ${isCorrect ? 'bg-emerald-400' : 'bg-rose-400'}"></span>
             <div>
               <h4 class="text-base font-bold ${isCorrect ? 'text-emerald-300' : 'text-rose-300'}">
-                ${isForced ? '¡Acierto Validado por Consenso de Comunidad!' : (isCorrect ? '¡Acierto Técnico Consolidado!' : 'Fallo Registrado en Base de Datos Roja')}
+                ${hasCustomOverride 
+                  ? '¡Acierto Validado por Elección Personalizada!' 
+                  : (isCorrect 
+                      ? '¡Acierto Técnico Consolidado!' 
+                      : (answer && answer.unanswered ? 'Pregunta Sin Responder (Marcada como Errónea)' : 'Fallo Registrado en Base de Datos Roja'))}
               </h4>
               <span class="text-xs text-slate-400">
-                ${isForced ? 'Forzado manualmente basándote en el debate técnico de la comunidad' : (isCorrect ? 'Tu respuesta coincide con la clave oficial' : 'Revisa el patrón que debiste haber seguido a continuación')}
+                ${hasCustomOverride 
+                  ? 'Respuesta personalizada guardada por el usuario' 
+                  : (isCorrect 
+                      ? 'Tu respuesta coincide con el criterio activo' 
+                      : (answer && answer.unanswered ? 'No seleccionaste ninguna opción antes de finalizar el examen. Se contabiliza como fallo.' : 'Revisa el desglose de acierto y descarte a continuación'))}
               </span>
             </div>
           </div>
           <div class="flex items-center gap-2">
             <span class="text-xs font-mono text-slate-300 bg-slate-800 px-2.5 py-1 rounded-lg border border-slate-700">
-              Respuesta Oficial: <strong class="text-emerald-400">${q.correctAnswer}</strong>
+              Válida: <strong class="text-emerald-400">${effectiveCorrect}</strong>
             </span>
           </div>
         </div>
 
-        <!-- Consenso de la Comunidad & Botón de Forzar Acierto -->
-        <div class="flex flex-wrap items-center justify-between gap-3 bg-slate-900/80 p-3.5 rounded-xl border border-slate-800">
-          <div class="text-xs text-slate-300">
-            <span class="font-bold text-cyan-400">Votación de la Comunidad:</span> 
-            ${q.communityVote ? `<span class="font-mono text-emerald-400 font-semibold ml-1">${q.communityVote}</span>` : '<span class="text-slate-500 ml-1">Sin porcentaje registrado</span>'}
+        <!-- Consenso de la Comunidad & Selector de Respuesta Forzada -->
+        <div class="flex flex-wrap items-center justify-between gap-3 bg-slate-900/90 p-4 rounded-xl border border-slate-800">
+          <div class="space-y-1">
+            <div class="flex items-center gap-2 text-xs">
+              <span class="text-slate-400 font-semibold">Respuesta Válida:</span>
+              <span class="font-mono text-base font-bold ${isCorrect ? 'text-emerald-400' : 'text-rose-400'} bg-slate-950 px-2.5 py-0.5 rounded-lg border border-slate-700">
+                ${effectiveCorrect}
+              </span>
+              ${hasCustomOverride ? `
+                <span class="bg-amber-500/20 text-amber-300 border border-amber-500/40 text-[10px] font-semibold px-2 py-0.5 rounded-md">
+                  Personalizada (Forzada)
+                </span>
+              ` : (commVoteAns ? `
+                <span class="bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 text-[10px] font-semibold px-2 py-0.5 rounded-md">
+                  Consenso Comunidad (Por defecto)
+                </span>
+              ` : `
+                <span class="bg-slate-700 text-slate-300 text-[10px] font-semibold px-2 py-0.5 rounded-md">
+                  Clave Oficial
+                </span>
+              `)}
+            </div>
+            <div class="text-[11px] text-slate-400 flex items-center gap-3">
+              <span>Comunidad: <strong class="font-mono text-emerald-400">${commVoteAns || 'N/A'}</strong> ${q.communityVote ? `(${q.communityVote})` : ''}</span>
+              <span>·</span>
+              <span>Oficial: <strong class="font-mono text-slate-300">${officialAns}</strong></span>
+            </div>
           </div>
 
-          <div>
-            ${!isCorrect ? `
-              <button onclick="app.forceCorrectAnswer('${q.id}')" class="flex items-center gap-2 bg-emerald-600/20 hover:bg-emerald-600/30 text-emerald-300 border border-emerald-500/40 px-3.5 py-2 rounded-xl text-xs font-semibold transition shadow-sm hover:shadow-emerald-950/50">
-                <i data-lucide="check-check" class="w-4 h-4 text-emerald-400"></i>
-                <span>Forzar Acierto (La comunidad me da la razón)</span>
+          <div class="flex items-center gap-2">
+            <button onclick="app.openForceAnswerModal('${q.id}')" class="flex items-center gap-1.5 bg-slate-800 hover:bg-slate-700 text-slate-200 border border-slate-700 hover:border-slate-600 px-3.5 py-2 rounded-xl text-xs font-semibold transition shadow-sm">
+              <i data-lucide="sliders" class="w-3.5 h-3.5 text-amber-400"></i>
+              <span>Elegir / Forzar Otra Respuesta</span>
+            </button>
+            ${hasCustomOverride ? `
+              <button onclick="app.resetForcedAnswer('${q.id}')" class="text-xs text-slate-400 hover:text-rose-400 underline transition px-2 py-1" title="Restablecer al consenso por defecto">
+                Restablecer
               </button>
-            ` : (isForced ? `
-              <div class="flex items-center gap-2 text-xs">
-                <span class="text-emerald-400 font-medium">✓ Acierto forzado por comunidad</span>
-                <button onclick="app.revertCorrectAnswer('${q.id}')" class="text-slate-400 hover:text-rose-400 underline text-xs transition ml-2">
-                  Revertir a fallo
-                </button>
-              </div>
-            ` : '')}
+            ` : ''}
           </div>
         </div>
 
-        <!-- ASOCIACIÓN CON EL REPEMILL (EXPLICACIÓN DEL PATRÓN QUE DEBIÓ SEGUIR) -->
-        ${repemillPattern ? `
-          <div class="bg-gradient-to-br from-indigo-950/40 via-slate-900 to-slate-900 border ${!isCorrect ? 'border-amber-500/60 shadow-amber-950/30' : 'border-indigo-500/40'} p-5 sm:p-6 rounded-2xl space-y-4 shadow-xl">
-            <div class="flex items-center justify-between pb-3 border-b border-indigo-500/25">
-              <div class="flex items-center gap-2.5">
-                <span class="p-1.5 rounded-xl ${!isCorrect ? 'bg-amber-500/20 text-amber-400 border border-amber-500/30' : 'bg-indigo-500/20 text-indigo-400 border border-indigo-500/30'}">
-                  <i data-lucide="compass" class="w-4 h-4"></i>
-                </span>
-                <div>
-                  <h4 class="text-sm sm:text-base font-bold text-white tracking-tight">
-                    ${!isCorrect ? 'Patrón Repemill que debiste haber seguido' : 'Patrón Repemill Asociado a este Requisito'}
-                  </h4>
-                  <span class="text-[11px] text-slate-400">Regla de decisión rápida para exámenes de certificación</span>
-                </div>
-              </div>
-              <span class="text-[10px] font-mono font-bold uppercase tracking-wider text-indigo-300 bg-indigo-950/90 px-2.5 py-1 rounded-lg border border-indigo-800/50">
-                ${repemillPattern.category}
-              </span>
-            </div>
-
-            <!-- Fila de Comparativa: Gatillo vs Servicio Óptimo -->
-            <div class="grid grid-cols-1 md:grid-cols-2 gap-3.5 text-xs">
-              <div class="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800/90 space-y-1.5">
-                <span class="text-amber-400 font-bold block flex items-center gap-1.5">
-                  <i data-lucide="target" class="w-3.5 h-3.5 text-amber-400"></i>
-                  Palabra Gatillo / Requisito Clave:
-                </span>
-                <p class="text-slate-200 leading-relaxed font-medium">${repemillPattern.trigger}</p>
-              </div>
-
-              <div class="bg-slate-950/80 p-3.5 rounded-xl border border-slate-800/90 space-y-1.5">
-                <span class="text-cyan-400 font-bold block flex items-center gap-1.5">
-                  <i data-lucide="zap" class="w-3.5 h-3.5 text-cyan-400"></i>
-                  Servicio AWS Óptimo que debiste elegir:
-                </span>
-                <p class="text-cyan-200 leading-relaxed font-semibold">${repemillPattern.optimalService}</p>
-              </div>
-            </div>
-
-            <!-- Por qué fallaron las otras opciones (Descarte Rápido) -->
-            <div class="bg-rose-950/25 border border-rose-900/50 p-4 rounded-xl text-xs space-y-1.5">
-              <span class="text-rose-300 font-bold flex items-center gap-1.5">
-                <i data-lucide="shield-alert" class="w-3.5 h-3.5 text-rose-400"></i>
-                Patrón de Descarte Rápido (Por qué descartar las otras opciones):
-              </span>
-              <p class="text-slate-300 leading-relaxed">${repemillPattern.discardPattern}</p>
-            </div>
-
-            <!-- Píldora Mnemotécnica de Fijación -->
-            ${repemillPattern.mnemonic ? `
-              <div class="text-xs text-indigo-300 bg-indigo-950/40 p-3 rounded-xl border border-indigo-500/30 flex items-start gap-2.5">
-                <i data-lucide="lightbulb" class="w-4 h-4 text-amber-400 flex-shrink-0 mt-0.5"></i>
-                <span><strong>Regla de Fijación:</strong> ${repemillPattern.mnemonic}</span>
-              </div>
-            ` : ''}
+        <!-- Acceso directo a Biblioteca de Arquetipos Repemill -->
+        <div class="flex items-center justify-between bg-slate-950/60 p-3.5 rounded-xl border border-slate-800/80 text-xs">
+          <div class="flex items-center gap-2 text-slate-300">
+            <i data-lucide="book-open" class="w-4 h-4 text-indigo-400"></i>
+            <span>¿Dudas de arquitectura? Consulta las reglas de descarte y duelos en el Repemill.</span>
           </div>
-        ` : ''}
+          <button onclick="app.navigate('repemill')" class="text-xs text-indigo-400 hover:text-indigo-300 font-semibold flex items-center gap-1 hover:underline transition">
+            <span>Ver Repemill AWS</span>
+            <i data-lucide="arrow-right" class="w-3.5 h-3.5"></i>
+          </button>
+        </div>
 
         <!-- Bloque de Nota Técnica Personal -->
         <div class="bg-indigo-950/20 border border-indigo-500/30 p-4 rounded-xl space-y-3">
@@ -1623,101 +2071,250 @@ function doPost(e) {
   }
 
   // =========================================================================
-  // VISTA 3: EL REPEMILL (TABLAS DE PATRONES POR SESIÓN)
+  // VISTA 3: EL REPEMILL (ARQUETIPOS DE COMPONENTES & GUÍA POR BLOQUES)
   // =========================================================================
+
+  setRepemillTab(tab) {
+    this.repemillTab = tab;
+    this.renderRepemillView();
+  }
+
+  setRepemillCategory(catId) {
+    this.repemillCategory = catId;
+    this.renderRepemillView();
+  }
 
   renderRepemillView() {
     const container = document.getElementById("view-container");
+    if (!container) return;
+
+    const currentTab = this.repemillTab || "components";
+    const currentCatId = this.repemillCategory || "todas";
     const blocksCount = 17;
     const blocksList = Array.from({ length: blocksCount }, (_, i) => i + 1);
+
+    const components = (typeof AWS_COMPONENTS !== "undefined") ? AWS_COMPONENTS : [];
+
+    const CATEGORIES = [
+      { id: "todas", label: "Todas", match: () => true },
+      { id: "seguridad", label: "Seguridad & Cifrado", match: (c) => /(seguridad|cifrado|identidad|gobernanza|privacidad|amenazas|autenticación|ddos|scp|kms)/i.test(c.category + " " + c.name) },
+      { id: "redes", label: "Redes & Conectividad", match: (c) => /(redes|edge|dns|balanceo|aceleración|cloudfront|transit|direct connect|privatelink|route53)/i.test(c.category + " " + c.name) },
+      { id: "computo", label: "Cómputo & Contenedores", match: (c) => /(cómputo|serverless|contenedores|kubernetes|lambda|fargate|ec2)/i.test(c.category + " " + c.name) },
+      { id: "almacenamiento", label: "Almacenamiento", match: (c) => /(almacenamiento|s3|glacier|efs|fsx|ebs|backup)/i.test(c.category + " " + c.name) },
+      { id: "database", label: "Bases de Datos & Caché", match: (c) => /(bases de datos|nosql|relacionales|caché|aurora|dynamodb|rds|elasticache)/i.test(c.category + " " + c.name) },
+      { id: "messaging", label: "Mensajería, Eventos & Streaming", match: (c) => /(mensajería|notificaciones|eventos|streaming|orquestación|flujos|kinesis|sqs|sns|eventbridge|step)/i.test(c.category + " " + c.name) },
+      { id: "migration", label: "Migración & Analítica", match: (c) => /(migración|analítica|transferencia|búsqueda|dms|opensearch)/i.test(c.category + " " + c.name) }
+    ];
+
+    const currentCatObj = CATEGORIES.find(cat => cat.id === currentCatId) || CATEGORIES[0];
+    const filteredComponents = components.filter(c => currentCatObj.match(c));
 
     container.innerHTML = `
       <div class="max-w-7xl mx-auto space-y-8 animate-fadeIn">
         
+        <!-- Header Principal de la Vista Repemill -->
         <div class="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-slate-900 p-6 rounded-2xl border border-slate-800">
           <div>
             <div class="flex items-center gap-2 text-indigo-400 font-semibold text-xs uppercase tracking-wider mb-1">
-              <i data-lucide="table" class="w-4 h-4"></i>
-              El "Repemill" Conceptual (Desgloses de Alta Frecuencia)
+              <i data-lucide="cpu" class="w-4 h-4"></i>
+              Biblioteca Repemill AWS (Patrones & Decisiones SAP-C02)
             </div>
             <h1 class="text-2xl sm:text-3xl font-bold text-white tracking-tight">
-              Tablas de Patrones & Palabras Gatillo por Bloque
+              ${currentTab === 'components' ? 'Catálogo de Arquetipos de Componentes' : 'Guía de Palabras Gatillo por Bloques'}
             </h1>
             <p class="text-slate-400 text-sm mt-1">
-              Estructura: [Palabra Gatillo / Requisito Clave] | [Servicio AWS Óptimo] | [Patrón de Descarte Rápido].
+              ${currentTab === 'components' 
+                ? 'Estructura Bipolar: [Patrón de Acierto / Por qué gana] | [Patrón de Descarte / Anti-patrón] | [Duelo 2x2 Clásico].'
+                : 'Guía técnica y descarte rápido organizada correlativamente por los 17 bloques oficiales de examen.'}
             </p>
           </div>
 
-          <div class="flex items-center gap-2">
-            <input id="repemill-search" oninput="app.filterRepemill(this.value)" type="text" placeholder="Buscar servicio o palabra gatillo..." class="bg-slate-800 border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 w-64">
+          <div class="flex flex-col sm:flex-row items-stretch sm:items-center gap-3">
+            <!-- Selector de Pestaña -->
+            <div class="flex items-center bg-slate-800 p-1 rounded-xl border border-slate-700">
+              <button onclick="app.setRepemillTab('components')" class="px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${currentTab === 'components' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}">
+                Componentes AWS (${components.length})
+              </button>
+              <button onclick="app.setRepemillTab('blocks')" class="px-3.5 py-1.5 rounded-lg text-xs font-semibold transition ${currentTab === 'blocks' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-400 hover:text-white'}">
+                Por Bloques (1-17)
+              </button>
+            </div>
+
+            <!-- Buscador en tiempo real -->
+            <input id="repemill-search" oninput="app.filterRepemill(this.value)" type="text" placeholder="${currentTab === 'components' ? 'Buscar componente, gatillo o trampa...' : 'Buscar en bloques...'}" class="bg-slate-800 border border-slate-700 rounded-xl px-3.5 py-2 text-sm text-slate-200 placeholder-slate-500 focus:outline-none focus:border-indigo-500 w-full sm:w-64">
           </div>
         </div>
 
-        <!-- Acordeones / Tablas por Bloque -->
-        <div id="repemill-content" class="space-y-6">
-          ${blocksList.map(bNum => this.renderRepemillBlockTable(bNum)).join("")}
+        ${currentTab === 'components' ? `
+          <!-- Filtro por Categorías -->
+          <div class="flex items-center gap-2 overflow-x-auto pb-1 no-scrollbar">
+            ${CATEGORIES.map(cat => {
+              const count = cat.id === 'todas' ? components.length : components.filter(c => cat.match(c)).length;
+              const isActive = currentCatId === cat.id;
+              return `
+                <button onclick="app.setRepemillCategory('${cat.id}')" class="px-3.5 py-1.5 rounded-xl text-xs font-semibold whitespace-nowrap transition border ${isActive ? 'bg-indigo-600 text-white border-indigo-500 shadow-sm' : 'bg-slate-900 text-slate-400 border-slate-800 hover:text-slate-200 hover:border-slate-700'}">
+                  ${cat.label} <span class="ml-1 text-[10px] font-mono opacity-80">(${count})</span>
+                </button>
+              `;
+            }).join("")}
+          </div>
+
+          <!-- Grid de Arquetipos de Componentes AWS -->
+          <div id="repemill-components" class="grid grid-cols-1 lg:grid-cols-2 gap-5">
+            ${filteredComponents.map(comp => this.renderRepemillComponentCard(comp)).join("")}
+          </div>
+        ` : `
+          <!-- Acordeones / Tablas por Bloque -->
+          <div id="repemill-content" class="space-y-6">
+            ${blocksList.map(bNum => this.renderRepemillBlockTable(bNum)).join("")}
+          </div>
+        `}
+
+      </div>
+    `;
+    if (window.lucide) window.lucide.createIcons();
+  }
+
+  renderRepemillBlockTable(bNum) {
+    const data = (typeof REPEMILL_DATA !== "undefined") ? REPEMILL_DATA[bNum] : null;
+    if (!data) return "";
+
+    return `
+      <div class="block-card bg-slate-900 border border-slate-800 rounded-2xl p-5 sm:p-6 shadow-lg space-y-4">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 pb-3 border-b border-slate-800">
+          <div>
+            <span class="text-xs font-mono font-bold text-indigo-400 uppercase tracking-wider">Bloque ${bNum} (Q${(bNum - 1) * 25 + 1} - Q${Math.min(bNum * 25, 411)})</span>
+            <h3 class="text-base sm:text-lg font-bold text-white tracking-tight mt-0.5">${data.title}</h3>
+          </div>
+          <span class="text-[11px] text-slate-400 font-mono bg-slate-800 px-2.5 py-1 rounded-lg border border-slate-700 w-fit">
+            ${data.patterns.length} patrones clave
+          </span>
         </div>
 
+        <div class="space-y-3">
+          ${data.patterns.map((p) => `
+            <div class="bg-slate-950/80 p-4 rounded-xl border border-slate-800/80 space-y-2 text-xs">
+              <div class="flex flex-wrap items-center justify-between gap-2">
+                <span class="text-amber-400 font-bold text-xs flex items-center gap-1.5">
+                  <i data-lucide="zap" class="w-3.5 h-3.5 text-amber-400"></i>
+                  ${p.trigger}
+                </span>
+                <span class="text-[10px] bg-indigo-950/80 text-indigo-300 border border-indigo-800/40 px-2 py-0.5 rounded font-medium">
+                  ${p.category}
+                </span>
+              </div>
+              <div class="text-emerald-300 font-semibold flex items-start gap-1.5">
+                <span class="text-emerald-400 font-bold flex-shrink-0">→ Solución Óptima:</span>
+                <span>${p.optimalService}</span>
+              </div>
+              <div class="text-slate-400 flex items-start gap-1.5">
+                <strong class="text-rose-400 font-semibold flex-shrink-0">Descarte Rápido:</strong>
+                <span>${p.discardPattern}</span>
+              </div>
+              ${p.mnemonic ? `
+                <div class="text-indigo-300 italic pt-1.5 border-t border-slate-800/60 flex items-center gap-1.5">
+                  <span>💡</span>
+                  <span><strong>Mnemotécnica:</strong> ${p.mnemonic}</span>
+                </div>
+              ` : ''}
+            </div>
+          `).join("")}
+        </div>
       </div>
     `;
   }
 
-  renderRepemillBlockTable(blockNumber) {
-    const data = REPEMILL_DATA[blockNumber];
-    if (!data) return "";
-
+  renderRepemillComponentCard(comp) {
     return `
-      <div class="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-lg">
-        <div class="bg-slate-800/60 p-4 border-b border-slate-800 flex items-center justify-between">
-          <div class="flex items-center gap-2">
-            <span class="w-2.5 h-2.5 rounded-full bg-indigo-500"></span>
-            <h3 class="text-base font-bold text-white">${data.title}</h3>
+      <div class="component-card bg-slate-900 border border-slate-800 rounded-2xl p-5 sm:p-6 shadow-lg space-y-4 hover:border-slate-700 transition flex flex-col justify-between" data-category="${comp.category.toLowerCase()}" data-name="${comp.name.toLowerCase()}">
+        
+        <!-- Header del Componente -->
+        <div class="space-y-1.5 pb-3 border-b border-slate-800">
+          <div class="flex items-start justify-between gap-2">
+            <h3 class="text-base sm:text-lg font-bold text-white tracking-tight flex items-center gap-2">
+              <span class="w-2.5 h-2.5 rounded-full bg-emerald-400 flex-shrink-0"></span>
+              <span>${comp.name}</span>
+            </h3>
+            <span class="text-[10px] font-mono font-semibold uppercase tracking-wider text-indigo-300 bg-indigo-950/80 px-2.5 py-1 rounded-lg border border-indigo-800/40 flex-shrink-0">
+              ${comp.category}
+            </span>
           </div>
-          <button onclick="app.startBlockSession(${blockNumber})" class="text-xs font-semibold text-indigo-400 hover:text-indigo-300 flex items-center gap-1">
-            <span>Iniciar Test del Bloque</span>
-            <i data-lucide="play" class="w-3 h-3"></i>
-          </button>
+          <p class="text-xs text-slate-400 font-medium leading-relaxed">${comp.archetype}</p>
         </div>
 
-        <div class="overflow-x-auto">
-          <table class="w-full text-left border-collapse text-sm">
-            <thead>
-              <tr class="border-b border-slate-800 text-xs font-semibold text-slate-400 bg-slate-900/50">
-                <th class="p-3.5 w-1/3">Palabra Gatillo / Requisito Clave</th>
-                <th class="p-3.5 w-1/3">Servicio AWS Óptimo</th>
-                <th class="p-3.5 w-1/3">Patrón de Descarte Rápido</th>
-              </tr>
-            </thead>
-            <tbody class="divide-y divide-slate-800/60 text-slate-300">
-              ${data.patterns.map(p => `
-                <tr class="hover:bg-slate-800/30 transition">
-                  <td class="p-3.5 font-medium text-slate-200">
-                    <span class="text-amber-400 font-bold block mb-1">${p.trigger}</span>
-                    <span class="text-[11px] text-slate-400 bg-slate-800 px-2 py-0.5 rounded">${p.category}</span>
-                  </td>
-                  <td class="p-3.5 font-semibold text-cyan-300">
-                    ${p.optimalService}
-                    ${p.mnemonic ? `<div class="text-[11px] text-indigo-300 font-normal mt-1 italic">💡 ${p.mnemonic}</div>` : ''}
-                  </td>
-                  <td class="p-3.5 text-xs text-slate-400 leading-relaxed">
-                    ${p.discardPattern}
-                  </td>
-                </tr>
-              `).join("")}
-            </tbody>
-          </table>
+        <!-- Cuerpo Bipolar: Acierto vs Descarte -->
+        <div class="space-y-3 flex-1 text-xs">
+          
+          <!-- Patrón de Acierto -->
+          <div class="bg-slate-950/80 p-3.5 rounded-xl border border-emerald-500/25 space-y-2">
+            <span class="text-emerald-400 font-bold text-[11px] uppercase tracking-wider flex items-center gap-1.5">
+              <i data-lucide="check-circle-2" class="w-3.5 h-3.5"></i>
+              Patrón de Acierto (Cuándo es la Elección Óptima)
+            </span>
+            <div>
+              <strong class="text-amber-400 font-semibold block text-[11px]">Palabra Gatillo / Requisito Clave:</strong>
+              <p class="text-slate-200 mt-0.5 leading-relaxed font-medium">${comp.winningPattern.trigger}</p>
+            </div>
+            <div>
+              <strong class="text-emerald-400 font-semibold block text-[11px]">Por qué gana en AWS:</strong>
+              <p class="text-slate-300 mt-0.5 leading-relaxed">${comp.winningPattern.whyWins}</p>
+            </div>
+            <div class="bg-emerald-950/40 p-2.5 rounded-lg border border-emerald-500/20 text-emerald-200 text-[11px] font-medium leading-relaxed">
+              💡 <strong>Regla de Decisión Rápida:</strong> ${comp.winningPattern.ruleOfThumb}
+            </div>
+          </div>
+
+          <!-- Patrón de Descarte -->
+          <div class="bg-slate-950/80 p-3.5 rounded-xl border border-rose-500/25 space-y-2">
+            <span class="text-rose-400 font-bold text-[11px] uppercase tracking-wider flex items-center gap-1.5">
+              <i data-lucide="x-circle" class="w-3.5 h-3.5"></i>
+              Patrón de Descarte (Cuándo Rechazarlo / Trampa)
+            </span>
+            <div>
+              <strong class="text-rose-300 font-semibold block text-[11px]">Trampa / Anti-Patrón Habitual:</strong>
+              <p class="text-slate-200 mt-0.5 leading-relaxed font-medium">${comp.discardPattern.antiPattern}</p>
+            </div>
+            <div>
+              <strong class="text-slate-400 font-semibold block text-[11px]">Por qué se descarta:</strong>
+              <p class="text-slate-300 mt-0.5 leading-relaxed">${comp.discardPattern.whyDiscard}</p>
+            </div>
+            <div class="bg-rose-950/40 p-2.5 rounded-lg border border-rose-500/20 text-rose-200 text-[11px] font-medium leading-relaxed">
+              ⚠️ <strong>Regla de Descarte en 5s:</strong> ${comp.discardPattern.quickDiscard}
+            </div>
+          </div>
+
+          <!-- Duelo 2x2 Clásico -->
+          ${comp.duel ? `
+            <div class="bg-indigo-950/40 p-3 rounded-xl border border-indigo-500/25 space-y-1 text-xs">
+              <strong class="text-indigo-200 font-bold uppercase tracking-wider text-[11px] flex items-center gap-1.5">
+                <i data-lucide="swords" class="w-3.5 h-3.5 text-indigo-400"></i>
+                ${comp.duel.vs}
+              </strong>
+              <p class="text-slate-300 leading-relaxed">${comp.duel.distinction}</p>
+            </div>
+          ` : ''}
+
         </div>
+
       </div>
     `;
   }
 
   filterRepemill(query) {
     const q = query.toLowerCase().trim();
-    const rows = document.querySelectorAll("#repemill-content tr");
-    rows.forEach(r => {
-      const text = r.textContent.toLowerCase();
-      r.style.display = text.includes(q) ? "" : "none";
-    });
+    if (this.repemillTab === 'components' || !this.repemillTab) {
+      const cards = document.querySelectorAll("#repemill-components .component-card");
+      cards.forEach(card => {
+        const text = card.textContent.toLowerCase();
+        card.style.display = text.includes(q) ? "" : "none";
+      });
+    } else {
+      const blocks = document.querySelectorAll("#repemill-content .block-card");
+      blocks.forEach(b => {
+        const text = b.textContent.toLowerCase();
+        b.style.display = text.includes(q) ? "" : "none";
+      });
+    }
   }
 
   // =========================================================================
@@ -1814,9 +2411,11 @@ function doPost(e) {
                     <p class="text-sm text-slate-200 line-clamp-3">
                       ${q.question}
                     </p>
-                    <div class="text-xs text-slate-400 mt-2">
-                      <strong class="text-emerald-400">Respuesta Oficial: ${q.correctAnswer}</strong>
-                      ${q.communityVote ? ` | Comunidad: ${q.communityVote}` : ''}
+                    <div class="text-xs text-slate-400 mt-2 flex flex-wrap items-center gap-2">
+                      <span class="text-emerald-400 font-bold">Válida: ${store.getEffectiveCorrectAnswer(q)}</span>
+                      ${store.hasCustomCorrectAnswer(q.id) ? '<span class="text-[10px] text-amber-300 bg-amber-950/80 px-1.5 py-0.5 rounded">Personalizada</span>' : ''}
+                      ${q.communityVote ? `<span class="text-slate-400 font-medium">(Comunidad: ${store.getCommunityVoteAnswer(q) || 'N/A'})</span>` : ''}
+                      <span class="text-slate-500 font-normal">Oficial: ${q.correctAnswer}</span>
                     </div>
                     ${mnemonic ? `
                       <div class="mt-2.5 p-2.5 rounded-lg bg-indigo-950/40 border border-indigo-500/30 text-xs text-indigo-300">
@@ -1826,12 +2425,18 @@ function doPost(e) {
                   </div>
 
                   <div class="flex items-center justify-between pt-3 border-t border-slate-800">
-                    <button onclick="app.launchSingleQuestionReview(${q.id})" class="text-xs font-semibold text-cyan-400 hover:text-cyan-300 flex items-center gap-1">
-                      <span>Repasar Pregunta</span>
-                      <i data-lucide="arrow-right" class="w-3 h-3"></i>
-                    </button>
+                    <div class="flex items-center gap-2">
+                      <button onclick="app.launchSingleQuestionReview(${q.id})" class="text-xs font-semibold text-cyan-400 hover:text-cyan-300 flex items-center gap-1">
+                        <span>Repasar</span>
+                        <i data-lucide="arrow-right" class="w-3 h-3"></i>
+                      </button>
+                      <button onclick="app.openForceAnswerModal('${q.id}')" class="text-xs text-amber-400 hover:text-amber-300 flex items-center gap-1 font-semibold ml-2" title="Elegir o forzar respuesta válida">
+                        <i data-lucide="sliders" class="w-3.5 h-3.5"></i>
+                        <span>Forzar/Elegir</span>
+                      </button>
+                    </div>
                     <button onclick="store.removeFailure(${q.id}); app.renderFailuresView()" class="text-xs text-slate-500 hover:text-rose-400 transition" title="Marcar como superada">
-                      Eliminar de fallos
+                      Eliminar
                     </button>
                   </div>
                 </div>
@@ -2039,4 +2644,10 @@ function doPost(e) {
 }
 
 // Inicialización global
-window.app = new App();
+if (typeof window !== "undefined" && typeof document !== "undefined" && typeof store !== "undefined" && (typeof module === "undefined" || !module.exports)) {
+  window.app = new App();
+}
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports = { App };
+}

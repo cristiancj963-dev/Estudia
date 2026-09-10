@@ -53,8 +53,6 @@ body {
   50% {
     box-shadow: 0 0 0 8px rgba(99, 102, 241, 0);
   }
-}
-.pomodoro-active-pulse,
 .focus-active-pulse {
   animation: focusPulse 2.5s infinite cubic-bezier(0.4, 0, 0.6, 1);
 }
