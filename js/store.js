@@ -36,7 +36,7 @@ class ExamStore {
     this.settings = {
       darkMode: true,
       soundEnabled: true,
-      autoAdvanceOnCorrect: true,
+      autoAdvanceOnCorrect: false,
       zenMode: false,
       googleSyncUrl: "",
       lastCloudSync: null
@@ -57,10 +57,81 @@ class ExamStore {
     this.listeners.forEach(fn => fn(this));
   }
 
+  ensureQuestionsLoaded() {
+    if ((!this.questions || !Array.isArray(this.questions) || this.questions.length === 0) &&
+        typeof window !== "undefined" && Array.isArray(window.DEFAULT_QUESTIONS) && window.DEFAULT_QUESTIONS.length > 0) {
+      this.questions = window.DEFAULT_QUESTIONS;
+    }
+  }
+
+  migratePendingExams() {
+    this.ensureQuestionsLoaded();
+    if (!this.questions || this.questions.length === 0) return;
+
+    // 1. Asegurar que cualquier respuesta en this.answers tenga booleano isCorrect
+    if (this.answers && typeof this.answers === "object") {
+      Object.entries(this.answers).forEach(([qId, ansObj]) => {
+        if (ansObj && Array.isArray(ansObj.selected) && ansObj.selected.length > 0 && typeof ansObj.isCorrect !== "boolean") {
+          const q = this.questions.find(item => String(item.id) === String(qId));
+          if (q) {
+            const effective = this.getEffectiveCorrectAnswer(q);
+            const selectedSorted = [...ansObj.selected].sort().join("");
+            ansObj.isCorrect = selectedSorted === effective;
+          }
+        }
+      });
+    }
+
+    // 2. Migrar respuestas que hubieran quedado en pendingExams del antiguo modo examen
+    if (this.pendingExams && typeof this.pendingExams === "object") {
+      let migratedAny = false;
+      Object.keys(this.pendingExams).forEach(blockKey => {
+        const pending = this.pendingExams[blockKey];
+        if (pending && pending.sessionAnswers && typeof pending.sessionAnswers === "object") {
+          Object.entries(pending.sessionAnswers).forEach(([qId, ansObj]) => {
+            if (ansObj && Array.isArray(ansObj.selected) && ansObj.selected.length > 0 && !this.answers[qId]) {
+              const q = this.questions.find(item => String(item.id) === String(qId));
+              if (q) {
+                const effective = this.getEffectiveCorrectAnswer(q);
+                const selectedSorted = [...ansObj.selected].sort().join("");
+                const isCorrect = selectedSorted === effective;
+                this.answers[qId] = {
+                  selected: ansObj.selected,
+                  isCorrect: isCorrect,
+                  timestamp: ansObj.timestamp || pending.updatedAt || new Date().toISOString(),
+                  attempts: 1
+                };
+                if (!isCorrect && !this.failures[qId]) {
+                  this.failures[qId] = {
+                    questionId: String(qId),
+                    blockNumber: q.blockNumber || Number(blockKey) || 1,
+                    concept: q.question ? q.question.slice(0, 80) + "..." : "",
+                    failureCount: 1,
+                    timestamp: new Date().toISOString()
+                  };
+                }
+                migratedAny = true;
+              }
+            }
+          });
+        }
+      });
+      if (migratedAny) {
+        this.pendingExams = {};
+      }
+    }
+  }
+
   loadFromStorage() {
     try {
       const qRaw = localStorage.getItem(STORAGE_KEYS.QUESTIONS);
-      if (qRaw) this.questions = JSON.parse(qRaw);
+      if (qRaw) {
+        const parsedQ = JSON.parse(qRaw);
+        if (Array.isArray(parsedQ) && parsedQ.length > 0) {
+          this.questions = parsedQ;
+        }
+      }
+      this.ensureQuestionsLoaded();
 
       const aRaw = localStorage.getItem(STORAGE_KEYS.ANSWERS);
       if (aRaw) this.answers = JSON.parse(aRaw);
@@ -96,15 +167,21 @@ class ExamStore {
       if (peRaw) this.pendingExams = JSON.parse(peRaw);
 
       const sRaw = localStorage.getItem(STORAGE_KEYS.SETTINGS);
-      if (sRaw) this.settings = { ...this.settings, ...JSON.parse(sRaw) };
+      if (sRaw) this.settings = { ...this.settings, ...JSON.parse(sRaw), autoAdvanceOnCorrect: false };
+
+      this.migratePendingExams();
     } catch (e) {
       console.warn("Error cargando de localStorage:", e);
+      this.ensureQuestionsLoaded();
     }
   }
 
   saveToStorage() {
+    this.ensureQuestionsLoaded();
     try {
-      localStorage.setItem(STORAGE_KEYS.QUESTIONS, JSON.stringify(this.questions));
+      if (this.questions && this.questions.length > 0) {
+        localStorage.setItem(STORAGE_KEYS.QUESTIONS, JSON.stringify(this.questions));
+      }
       localStorage.setItem(STORAGE_KEYS.ANSWERS, JSON.stringify(this.answers));
       localStorage.setItem(STORAGE_KEYS.FAILURES, JSON.stringify(this.failures));
       localStorage.setItem(STORAGE_KEYS.RESOLVED_FAILURES, JSON.stringify(this.resolvedFailures));
@@ -356,8 +433,10 @@ class ExamStore {
 
   /**
    * Divide las preguntas en bloques cerrados de 25 preguntas
+   * Evaluando cada pregunta en tiempo real según se valida
    */
   getBlocksSummary() {
+    this.ensureQuestionsLoaded();
     const blocks = [];
     const totalQuestions = this.questions.length;
     const numBlocks = Math.ceil(totalQuestions / 25) || 17;
@@ -368,45 +447,34 @@ class ExamStore {
       const blockQuestions = this.questions.slice(startIdx, endIdx);
       const totalInBlock = blockQuestions.length;
 
-      const isCompleted = this.isBlockCompleted(b);
-      const pending = this.getPendingExam(b);
-
       let answered = 0;
       let correct = 0;
       let failed = 0;
       let doubtful = 0;
 
-      if (isCompleted) {
-        blockQuestions.forEach(q => {
-          const qId = String(q.id);
-          if (this.answers[qId]) {
-            answered++;
-            if (this.answers[qId].isCorrect) correct++;
-            else failed++;
-          }
-          if (this.doubts[qId]) doubtful++;
-        });
-      } else if (pending && pending.sessionAnswers) {
-        answered = Object.keys(pending.sessionAnswers).length;
-        blockQuestions.forEach(q => {
-          if (this.doubts[String(q.id)]) doubtful++;
-        });
-      } else {
-        blockQuestions.forEach(q => {
-          if (this.doubts[String(q.id)]) doubtful++;
-        });
-      }
+      blockQuestions.forEach(q => {
+        const qId = String(q.id);
+        const ans = this.answers[qId];
+        if (ans && ans.selected && ans.selected.length > 0 && typeof ans.isCorrect === "boolean") {
+          answered++;
+          if (ans.isCorrect) correct++;
+          else failed++;
+        }
+        if (this.doubts[qId]) doubtful++;
+      });
+
+      const isCompleted = (totalInBlock > 0 && answered >= totalInBlock) || !!(this.completedBlocks && this.completedBlocks[b]);
 
       let status = "pending";
       if (isCompleted) {
         status = "completed";
-      } else if (answered > 0 || (pending && Object.keys(pending.sessionAnswers || {}).length > 0)) {
+      } else if (answered > 0) {
         status = "in_progress";
       }
 
-      const accuracy = (isCompleted && answered > 0) ? Math.round((correct / answered) * 100) : 0;
+      const accuracy = answered > 0 ? Math.round((correct / answered) * 100) : 0;
       // Puntuación Neta para el bloque: Aciertos - (Fallos / 3)
-      const netScore = isCompleted ? Math.max(0, +(correct - (failed / 3)).toFixed(1)) : 0;
+      const netScore = answered > 0 ? Math.max(0, +(correct - (failed / 3)).toFixed(1)) : 0;
 
       blocks.push({
         blockNumber: b,
@@ -759,9 +827,13 @@ class ExamStore {
         this.focusStats = data.pomodoroStats;
         this.pomodoroStats = this.focusStats;
       }
-      if (data.settings) this.settings = { ...this.settings, ...data.settings };
-      if (data.questions && Array.isArray(data.questions)) this.questions = data.questions;
+      if (data.settings) this.settings = { ...this.settings, ...data.settings, autoAdvanceOnCorrect: false };
+      if (data.questions && Array.isArray(data.questions) && data.questions.length > 0) {
+        this.questions = data.questions;
+      }
 
+      this.ensureQuestionsLoaded();
+      this.migratePendingExams();
       this.saveToStorage();
       return { success: true, message: "Progreso y estadísticas restaurados correctamente." };
     } catch (err) {

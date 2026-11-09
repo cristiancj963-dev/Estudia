@@ -4,9 +4,9 @@
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
-  "background_color": "#0b0f19",
-  "theme_color": "#0b0f19",
-  "description": "Entrenamiento intensivo para AWS SAP-C02 con descarte rápido y repetición activa",
+  "background_color": "#0b121c",
+  "theme_color": "#161e2d",
+  "description": "Entrenamiento intensivo para AWS SAP-C02 con validación inmediata, copia para IA y repetición activa",
   "icons": [
     {
       "src": "icons/icon-192.png",

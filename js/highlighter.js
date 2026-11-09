@@ -121,21 +121,21 @@ const Highlighter = {
     const sortedServices = [...new Set(Highlighter.awsServices)]
       .sort((a, b) => b.length - a.length);
 
-    // 3. Procesar Requisitos Críticos (Ámbar)
+    // 3. Procesar Requisitos Críticos (Naranja/Ámbar AWS)
     for (const kw of sortedKeywords) {
       const escaped = kw.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&");
       const regex = new RegExp(`\\b(${escaped})\\b`, "gi");
       safe = safe.replace(regex, (match) => {
-        return createToken(`<mark class="bg-amber-500/20 text-amber-300 font-bold px-1.5 py-0.5 rounded border border-amber-500/40">${match}</mark>`);
+        return createToken(`<mark class="bg-[#ff9900]/20 text-[#ffb84d] font-bold px-1.5 py-0.5 rounded border border-[#ff9900]/40">${match}</mark>`);
       });
     }
 
-    // 4. Procesar Servicios AWS (Cian)
+    // 4. Procesar Servicios AWS (Azul Cloud AWS)
     for (const svc of sortedServices) {
       const escaped = svc.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&");
       const regex = new RegExp(`\\b(${escaped})\\b`, "gi");
       safe = safe.replace(regex, (match) => {
-        return createToken(`<span class="text-cyan-400 font-semibold">${match}</span>`);
+        return createToken(`<span class="text-[#38bdf8] font-semibold bg-[#00a1c9]/10 px-1 py-0.5 rounded">${match}</span>`);
       });
     }
 
